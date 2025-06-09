@@ -46,7 +46,7 @@ def run_irc_forever(config, token_manager, message_queue=None):
 
     def on_connect(connection, event):
         # Request IRCv3 tags capability before joining channel
-        connection.cap('REQ', ':twitch.tv/tags')
+        connection.cap('REQ', ':twitch.tv/tags', ':twitch.tv/commands', ':twitch.tv/membership')
         connection.join(channel)
         print(f"[IRC] Connected and joined {channel}")
 
