@@ -1,5 +1,31 @@
-import yaml
 import logging
+
+# --- Main moderation/chat logs to chat_log.txt ---
+logging.basicConfig(
+    filename="chat_log.txt",
+    level=logging.INFO,
+    format="%(asctime)s %(message)s",
+)
+
+# --- All OpenAI, HTTPX, and HTTPCore logs to api_log.txt ---
+api_logger = logging.getLogger("api_logger")
+api_logger.setLevel(logging.INFO)
+api_handler = logging.FileHandler("api_log.txt")
+api_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s'))
+api_logger.addHandler(api_handler)
+
+for log_name in ["openai", "httpx", "httpcore"]:
+    lib_logger = logging.getLogger(log_name)
+    # Remove all handlers that might log to console or elsewhere
+    lib_logger.handlers = []
+    # Prevent logs from being passed to ancestor loggers
+    lib_logger.propagate = False
+    # Set desired log level
+    lib_logger.setLevel(logging.INFO)
+    # Add the api_log.txt handler
+    lib_logger.addHandler(api_handler)
+
+import yaml
 import threading
 import sys
 import os
@@ -24,34 +50,31 @@ def load_config():
 
 def get_thread_id(client_ai, channel, thread_map_file="thread_map.json"):
     """
-    Loads or creates an OpenAI thread for this channel and prints status.
+    Loads or creates an OpenAI thread for this channel (case-insensitive) and prints status.
     Returns the thread ID.
     """
+    channel_lower = channel.lower()  # normalize key to lower-case
+
     if os.path.exists(thread_map_file):
         with open(thread_map_file, "r") as f:
             channel_threads = json.load(f)
     else:
         channel_threads = {}
 
-    if channel in channel_threads:
-        thread_id = channel_threads[channel]
-        print(f"[THREAD] Using existing thread for {channel}: {thread_id}")
+    if channel_lower in channel_threads:
+        thread_id = channel_threads[channel_lower]
+        print(f"[THREAD] Using existing thread for {channel_lower}: {thread_id}")
     else:
         thread = client_ai.beta.threads.create()
         thread_id = thread.id
-        channel_threads[channel] = thread_id
+        channel_threads[channel_lower] = thread_id
         with open(thread_map_file, "w") as f:
             json.dump(channel_threads, f)
-        print(f"[THREAD] Created new thread for {channel}: {thread_id}")
+        print(f"[THREAD] Created new thread for {channel_lower}: {thread_id}")
     return thread_id
 
 def main():
     config = load_config()
-    logging.basicConfig(
-        filename="chat_log.txt",
-        level=logging.INFO,
-        format="%(asctime)s %(message)s",
-    )
 
     # --- Twitch/OpenAI setup ---
     twitch = config["twitch"]
