@@ -76,6 +76,16 @@ def wait_for_run_completion(openai_client, thread_id, run, poll_interval=5, time
                 return status
             if status.status in ("failed", "cancelled", "expired"):
                 print(f"[ERROR][MODERATION] Run status for {run.id} is {status.status}")
+                try:
+                    if hasattr(status, "model_dump_json"):
+                        details = status.model_dump_json(indent=2)
+                    elif hasattr(status, "to_dict"):
+                        details = json.dumps(status.to_dict(), indent=2)
+                    else:
+                        details = repr(status)
+                except Exception as e:
+                    details = f"<error getting run details: {e}>"
+                print(f"[ERROR][MODERATION] Run details:\n{details}")
                 return status
             if time.time() - start > timeout:
                 print(f"[ERROR][RUN] Timed out waiting for run {run.id} on thread {thread_id}")
