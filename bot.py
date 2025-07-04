@@ -33,7 +33,7 @@ import json
 
 from twitch_auth import TwitchOAuthTokenManager
 from irc_client import run_irc_forever
-from moderation import message_queue, batch_worker, loss_report
+from moderation import message_queue, batch_worker, run_worker, loss_report
 
 try:
     from openai import OpenAI
@@ -96,7 +96,7 @@ def main():
     # --- Persistent thread ID ---
     thread_id = get_thread_id(client_ai, channel)
 
-    # --- Moderation batch worker (thread) ---
+    # --- Moderation batch and run workers (threads) ---
     stop_event = threading.Event()
     batch_thread = threading.Thread(
         target=batch_worker,
@@ -115,6 +115,21 @@ def main():
     )
     batch_thread.start()
 
+    run_thread = threading.Thread(
+        target=run_worker,
+        args=(
+            stop_event,
+            client_ai,
+            assistant_id,
+            model,
+            thread_id,
+            twitch["client_id"],
+            token_manager
+        ),
+        daemon=True
+    )
+    run_thread.start()
+
     try:
         print("[BOT] Starting IRC loop...")
         run_irc_forever(config, token_manager, message_queue)
@@ -123,6 +138,7 @@ def main():
     finally:
         stop_event.set()
         batch_thread.join(timeout=10)
+        run_thread.join(timeout=10)
         loss_report()
 
 if __name__ == "__main__":
