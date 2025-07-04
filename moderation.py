@@ -9,6 +9,7 @@ import requests
 
 # --- Message queue used for incoming messages from IRC ---
 message_queue = queue.Queue()
+run_queue = queue.Queue()
 
 produced_ids = set()
 consumed_ids = set()
@@ -252,20 +253,9 @@ def batch_worker(stop_event, openai_client, assistant_id, model, thread_id, chan
                     channel_info = None
 
             if batch and (now - last_send >= batch_interval):
-                print(f"[INFO] Sending batch of {len(batch)} messages to moderation...")
-                ok = run_with_timeout(
-                    moderate_batch,
-                    args=(openai_client, assistant_id, model, thread_id, batch, channel_info, token_manager.get_token(), client_id),
-                    timeout=MODERATION_TIMEOUT_SECONDS
-                )
-                if ok:
-                    batch.clear()
-                else:
-                    print(f"[ERROR][BATCH] Moderation failed or timed out or API did not respond. Marking {len(batch)} messages as NOT MODERATED and moving on.")
-                    debug_ids = [msg['id'] for msg in batch]
-                    not_moderated.update(debug_ids)
-                    print(f"[DEBUG][NOT-MODERATED] Message IDs not moderated (sample): {debug_ids[:10]}{' ...' if len(debug_ids) > 10 else ''}")
-                    batch.clear()
+                print(f"[INFO] Queuing batch of {len(batch)} messages for moderation...")
+                run_queue.put((batch.copy(), channel_info))
+                batch.clear()
                 last_send = now
             time.sleep(0.05)
         except Exception as e:
@@ -273,19 +263,28 @@ def batch_worker(stop_event, openai_client, assistant_id, model, thread_id, chan
 
     if batch:
         print(f"[INFO] Final flush of {len(batch)} messages...")
+        run_queue.put((batch.copy(), channel_info))
+        batch.clear()
+
+def run_worker(stop_event, openai_client, assistant_id, model, thread_id, client_id, token_manager):
+    """Process batches from run_queue sequentially without blocking batch_worker."""
+    while not stop_event.is_set() or not run_queue.empty():
+        try:
+            batch, channel_info = run_queue.get(timeout=1)
+        except queue.Empty:
+            continue
+
         ok = run_with_timeout(
             moderate_batch,
             args=(openai_client, assistant_id, model, thread_id, batch, channel_info, token_manager.get_token(), client_id),
-            timeout=MODERATION_TIMEOUT_SECONDS
+            timeout=MODERATION_TIMEOUT_SECONDS,
         )
-        if ok:
-            batch.clear()
-        else:
-            print(f"[ERROR][BATCH] Final moderation failed or timed out. Marking {len(batch)} messages as NOT MODERATED and moving on.")
+
+        if not ok:
+            print(f"[ERROR][BATCH] Moderation failed or timed out or API did not respond. Marking {len(batch)} messages as NOT MODERATED and moving on.")
             debug_ids = [msg['id'] for msg in batch]
             not_moderated.update(debug_ids)
             print(f"[DEBUG][NOT-MODERATED] Message IDs not moderated (sample): {debug_ids[:10]}{' ...' if len(debug_ids) > 10 else ''}")
-            batch.clear()
 
 def loss_report():
     missing = produced_ids - consumed_ids
