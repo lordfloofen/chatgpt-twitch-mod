@@ -40,7 +40,7 @@ def delete_chat_message(broadcaster_id, moderator_id, message_id, token, client_
         print(f"[TWITCH][ERROR] Exception deleting message {message_id}: {e}")
         return False
 
-def wait_for_runs_to_complete(openai_client, thread_id, poll_interval=0.5, timeout=120):
+def wait_for_runs_to_complete(openai_client, thread_id, poll_interval=5, timeout=120):
     start = time.time()
     while True:
         try:
@@ -55,6 +55,34 @@ def wait_for_runs_to_complete(openai_client, thread_id, poll_interval=0.5, timeo
         except Exception as e:
             print(f"[ERROR][RUN] Exception while waiting for runs: {e}")
             return
+
+def wait_for_run_completion(openai_client, thread_id, run, poll_interval=5, timeout=120):
+    """Wait for a single run to complete and return its final status."""
+    start = time.time()
+
+    # Use the official wait() helper if available
+    try:
+        wait_fn = getattr(openai_client.beta.threads.runs, "wait", None)
+        if callable(wait_fn):
+            return wait_fn(run_id=run.id, thread_id=thread_id, timeout=timeout)
+    except Exception as e:
+        print(f"[WARN][RUN] wait() helper failed: {e}; falling back to manual polling")
+
+    while True:
+        try:
+            status = openai_client.beta.threads.runs.retrieve(run.id, thread_id=thread_id)
+            if status.status == "completed":
+                return status
+            if status.status in ("failed", "cancelled", "expired"):
+                print(f"[ERROR][MODERATION] Run status for {run.id} is {status.status}")
+                return status
+            if time.time() - start > timeout:
+                print(f"[ERROR][RUN] Timed out waiting for run {run.id} on thread {thread_id}")
+                return status
+            time.sleep(poll_interval)
+        except Exception as e:
+            print(f"[ERROR][RUN] Exception while waiting for run: {e}")
+            return None
 
 def run_with_timeout(func, args=(), kwargs=None, timeout=60):
     if kwargs is None:
@@ -92,7 +120,7 @@ def moderate_batch(openai_client, assistant_id, model, thread_id, batch, channel
             right = moderate_batch(openai_client, assistant_id, model, thread_id, batch[mid:], channel_info, token, client_id)
             return left and right
 
-        wait_for_runs_to_complete(openai_client, thread_id)
+        wait_for_runs_to_complete(openai_client, thread_id, poll_interval=5)
 
         try:
             resp_msg = openai_client.beta.threads.messages.create(
@@ -114,18 +142,9 @@ def moderate_batch(openai_client, assistant_id, model, thread_id, batch, channel
             print(f"[ERROR][MODERATION] Exception creating run: {e}")
             return False
 
-        while True:
-            try:
-                status = openai_client.beta.threads.runs.retrieve(run.id, thread_id=thread_id)
-                if status.status == "completed":
-                    break
-                if status.status in ("failed", "cancelled", "expired"):
-                    print(f"[ERROR][MODERATION] Run status for {run.id} is {status.status}")
-                    return False
-                time.sleep(0.2)
-            except Exception as e:
-                print(f"[ERROR][MODERATION] Exception retrieving run status: {e}")
-                return False
+        status = wait_for_run_completion(openai_client, thread_id, run, poll_interval=5)
+        if not status or status.status != "completed":
+            return False
 
         try:
             result = openai_client.beta.threads.messages.list(thread_id=thread_id)
