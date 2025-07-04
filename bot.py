@@ -108,7 +108,7 @@ def main():
             thread_id,
             channel,
             twitch["client_id"],
-            token_manager.get_token(),  # Pass OAuth token for message deletion
+            token_manager,  # pass manager so worker can refresh token
             batch_interval
         ),
         daemon=True

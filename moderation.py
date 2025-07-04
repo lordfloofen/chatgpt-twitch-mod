@@ -208,7 +208,8 @@ def get_channel_info(channel, client_id, token):
 
     return info
 
-def batch_worker(stop_event, openai_client, assistant_id, model, thread_id, channel, client_id, token, batch_interval=2):
+def batch_worker(stop_event, openai_client, assistant_id, model, thread_id, channel, client_id, token_manager, batch_interval=2):
+    """Process queued messages in batches and moderate them."""
     batch = []
     last_send = time.time()
     channel_info = None
@@ -225,7 +226,7 @@ def batch_worker(stop_event, openai_client, assistant_id, model, thread_id, chan
             now = time.time()
             if now - last_channel_info_time > CHANNEL_INFO_REFRESH or channel_info is None:
                 try:
-                    channel_info = get_channel_info(channel, client_id, token)
+                    channel_info = get_channel_info(channel, client_id, token_manager.get_token())
                     last_channel_info_time = now
                 except Exception as e:
                     print(f"[WARN] Could not fetch channel info: {e}")
@@ -235,7 +236,7 @@ def batch_worker(stop_event, openai_client, assistant_id, model, thread_id, chan
                 print(f"[INFO] Sending batch of {len(batch)} messages to moderation...")
                 ok = run_with_timeout(
                     moderate_batch,
-                    args=(openai_client, assistant_id, model, thread_id, batch, channel_info, token, client_id),
+                    args=(openai_client, assistant_id, model, thread_id, batch, channel_info, token_manager.get_token(), client_id),
                     timeout=MODERATION_TIMEOUT_SECONDS
                 )
                 if ok:
@@ -255,7 +256,7 @@ def batch_worker(stop_event, openai_client, assistant_id, model, thread_id, chan
         print(f"[INFO] Final flush of {len(batch)} messages...")
         ok = run_with_timeout(
             moderate_batch,
-            args=(openai_client, assistant_id, model, thread_id, batch, channel_info, token, client_id),
+            args=(openai_client, assistant_id, model, thread_id, batch, channel_info, token_manager.get_token(), client_id),
             timeout=MODERATION_TIMEOUT_SECONDS
         )
         if ok:
