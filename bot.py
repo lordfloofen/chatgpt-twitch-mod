@@ -33,7 +33,7 @@ import json
 
 from twitch_auth import TwitchOAuthTokenManager
 from irc_client import run_irc_forever
-from moderation import message_queue, batch_worker, run_worker, loss_report
+from moderation import message_queue, batch_worker, run_worker, loss_report, configure_limits
 from token_utils import TokenBucket
 
 try:
@@ -85,6 +85,8 @@ def main():
     batch_interval = config.get("batch_interval", 2)
     tokens_per_minute = config.get("tokens_per_minute", 20000)
     moderation_timeout = config.get("moderation_timeout", 60)
+    max_openai_content_size = config.get("max_openai_content_size", 256000)
+    max_rate_limit_retries = config.get("max_rate_limit_retries", 3)
     channel = twitch["channel"]
 
     # --- Token manager ---
@@ -97,6 +99,8 @@ def main():
     client_ai = OpenAI(api_key=api_key)
 
     token_bucket = TokenBucket(tokens_per_minute)
+
+    configure_limits(max_openai_content_size, max_rate_limit_retries)
 
     # --- Persistent thread ID ---
     thread_id = get_thread_id(client_ai, channel)

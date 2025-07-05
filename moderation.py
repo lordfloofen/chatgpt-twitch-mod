@@ -6,6 +6,8 @@ import queue
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 import requests
+import re
+import math
 
 # --- Message queue used for incoming messages from IRC ---
 message_queue = queue.Queue()
@@ -16,6 +18,35 @@ consumed_ids = set()
 not_moderated = set()
 
 MAX_OPENAI_CONTENT_SIZE = 256000
+MAX_RATE_LIMIT_RETRIES = 3
+
+
+def configure_limits(max_openai_content_size: int | None = None, max_rate_limit_retries: int | None = None) -> None:
+    """Override module limits from configuration."""
+    global MAX_OPENAI_CONTENT_SIZE, MAX_RATE_LIMIT_RETRIES
+    if max_openai_content_size is not None:
+        try:
+            MAX_OPENAI_CONTENT_SIZE = int(max_openai_content_size)
+        except Exception:
+            pass
+    if max_rate_limit_retries is not None:
+        try:
+            MAX_RATE_LIMIT_RETRIES = int(max_rate_limit_retries)
+        except Exception:
+            pass
+
+
+def _parse_retry_after_seconds(message: str, default: int = 5) -> int:
+    """Extract retry delay from a rate limit error message."""
+    if not message:
+        return default
+    match = re.search(r"try again in ([0-9.]+)s", message, re.IGNORECASE)
+    if match:
+        try:
+            return max(default, math.ceil(float(match.group(1))))
+        except Exception:
+            return default
+    return default
 
 def delete_chat_message(broadcaster_id, moderator_id, message_id, token, client_id):
     url = "https://api.twitch.tv/helix/moderation/chat"
@@ -110,7 +141,18 @@ def run_with_timeout(func, args=(), kwargs=None, timeout=60):
 
 from token_utils import count_tokens, TokenBucket
 
-def moderate_batch(openai_client, assistant_id, model, thread_id, batch, channel_info=None, token=None, client_id=None, token_bucket: TokenBucket = None):
+
+def moderate_batch(
+    openai_client,
+    assistant_id,
+    model,
+    thread_id,
+    batch,
+    channel_info=None,
+    token=None,
+    client_id=None,
+    token_bucket: TokenBucket = None,
+):
     try:
         context = {
             "game": channel_info.get('stream', {}).get('game_name') if channel_info else None,
@@ -119,7 +161,7 @@ def moderate_batch(openai_client, assistant_id, model, thread_id, batch, channel
 
         payload = {
             "context": context,
-            "messages": batch
+            "messages": batch,
         }
         batch_json = json.dumps(payload)
         if len(batch_json) > MAX_OPENAI_CONTENT_SIZE:
@@ -132,34 +174,59 @@ def moderate_batch(openai_client, assistant_id, model, thread_id, batch, channel
             right = moderate_batch(openai_client, assistant_id, model, thread_id, batch[mid:], channel_info, token, client_id, token_bucket)
             return left and right
 
-        wait_for_runs_to_complete(openai_client, thread_id, poll_interval=5)
+        for attempt in range(MAX_RATE_LIMIT_RETRIES + 1):
+            wait_for_runs_to_complete(openai_client, thread_id, poll_interval=5)
 
-        if token_bucket is not None:
-            tokens_needed = count_tokens(batch_json, model)
-            token_bucket.consume(tokens_needed)
+            if token_bucket is not None:
+                tokens_needed = count_tokens(batch_json, model)
+                token_bucket.consume(tokens_needed)
 
-        try:
-            resp_msg = openai_client.beta.threads.messages.create(
-                thread_id=thread_id,
-                role="user",
-                content=batch_json
-            )
-        except Exception as e:
-            print(f"[ERROR][MODERATION] Exception adding messages: {e}")
+            try:
+                openai_client.beta.threads.messages.create(
+                    thread_id=thread_id,
+                    role="user",
+                    content=batch_json,
+                )
+            except Exception as e:
+                msg = str(e)
+                if "rate limit" in msg.lower():
+                    wait = _parse_retry_after_seconds(msg)
+                    print(f"[RATE LIMIT] Messages.create hit rate limit, retrying in {wait}s...")
+                    time.sleep(wait)
+                    continue
+                print(f"[ERROR][MODERATION] Exception adding messages: {e}")
+                return False
+
+            try:
+                run = openai_client.beta.threads.runs.create(
+                    thread_id=thread_id,
+                    assistant_id=assistant_id,
+                    model=model,
+                )
+            except Exception as e:
+                msg = str(e)
+                if "rate limit" in msg.lower():
+                    wait = _parse_retry_after_seconds(msg)
+                    print(f"[RATE LIMIT] Runs.create hit rate limit, retrying in {wait}s...")
+                    time.sleep(wait)
+                    continue
+                print(f"[ERROR][MODERATION] Exception creating run: {e}")
+                return False
+
+            status = wait_for_run_completion(openai_client, thread_id, run, poll_interval=5)
+            if status and status.status == "completed":
+                break
+            if status and status.status == "failed":
+                last_error = getattr(status, "last_error", None)
+                if last_error and getattr(last_error, "code", "") == "rate_limit_exceeded":
+                    wait = _parse_retry_after_seconds(getattr(last_error, "message", ""))
+                    print(f"[RATE LIMIT] Run failed due to rate limit, retrying in {wait}s...")
+                    time.sleep(wait)
+                    continue
+            print("[ERROR][MODERATION] Run did not complete successfully")
             return False
-
-        try:
-            run = openai_client.beta.threads.runs.create(
-                thread_id=thread_id,
-                assistant_id=assistant_id,
-                model=model
-            )
-        except Exception as e:
-            print(f"[ERROR][MODERATION] Exception creating run: {e}")
-            return False
-
-        status = wait_for_run_completion(openai_client, thread_id, run, poll_interval=5)
-        if not status or status.status != "completed":
+        else:
+            print("[ERROR][MODERATION] Exceeded maximum retries due to rate limit")
             return False
 
         try:
