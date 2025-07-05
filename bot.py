@@ -84,6 +84,7 @@ def main():
     model = config.get("model", "gpt-4o-mini")
     batch_interval = config.get("batch_interval", 2)
     tokens_per_minute = config.get("tokens_per_minute", 20000)
+    moderation_timeout = config.get("moderation_timeout", 60)
     channel = twitch["channel"]
 
     # --- Token manager ---
@@ -129,7 +130,8 @@ def main():
             thread_id,
             twitch["client_id"],
             token_manager,
-            token_bucket
+            token_bucket,
+            moderation_timeout
         ),
         daemon=True
     )

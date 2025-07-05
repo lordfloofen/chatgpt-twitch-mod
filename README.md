@@ -34,6 +34,7 @@ assistant_id: "your-assistant-id"
 model: "gpt-4o-mini"
 batch_interval: 10
 tokens_per_minute: 20000
+moderation_timeout: 60
 twitch:
   server: "irc.chat.twitch.tv"
   port: 6697
@@ -77,6 +78,7 @@ See `config.yaml` for all configuration options. Key settings:
 - `batch_interval`: Time in seconds between moderation batches
 - `model`: OpenAI model to use for moderation
 - `tokens_per_minute`: Rate limit for OpenAI API usage
+- `moderation_timeout`: Timeout in seconds for each moderation batch
 - Twitch credentials and connection settings
 
 ## Contributing
