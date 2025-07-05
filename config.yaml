@@ -4,6 +4,8 @@ model: "gpt-4o-mini"
 batch_interval: 10
 tokens_per_minute: 20000
 moderation_timeout: 60
+max_openai_content_size: 256000
+max_rate_limit_retries: 3
 twitch:
   server: "irc.chat.twitch.tv"
   port: 6697
