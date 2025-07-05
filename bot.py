@@ -34,6 +34,7 @@ import json
 from twitch_auth import TwitchOAuthTokenManager
 from irc_client import run_irc_forever
 from moderation import message_queue, batch_worker, run_worker, loss_report
+from token_utils import TokenBucket
 
 try:
     from openai import OpenAI
@@ -82,6 +83,7 @@ def main():
     assistant_id = config["assistant_id"]
     model = config.get("model", "gpt-4o-mini")
     batch_interval = config.get("batch_interval", 2)
+    tokens_per_minute = config.get("tokens_per_minute", 20000)
     channel = twitch["channel"]
 
     # --- Token manager ---
@@ -92,6 +94,8 @@ def main():
 
     # --- OpenAI Client ---
     client_ai = OpenAI(api_key=api_key)
+
+    token_bucket = TokenBucket(tokens_per_minute)
 
     # --- Persistent thread ID ---
     thread_id = get_thread_id(client_ai, channel)
@@ -124,7 +128,8 @@ def main():
             model,
             thread_id,
             twitch["client_id"],
-            token_manager
+            token_manager,
+            token_bucket
         ),
         daemon=True
     )

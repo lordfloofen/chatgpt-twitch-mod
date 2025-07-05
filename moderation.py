@@ -109,7 +109,9 @@ def run_with_timeout(func, args=(), kwargs=None, timeout=60):
             print(f"[ERROR][MODERATION][THREAD] {e}")
             return False
 
-def moderate_batch(openai_client, assistant_id, model, thread_id, batch, channel_info=None, token=None, client_id=None):
+from token_utils import count_tokens, TokenBucket
+
+def moderate_batch(openai_client, assistant_id, model, thread_id, batch, channel_info=None, token=None, client_id=None, token_bucket: TokenBucket = None):
     try:
         context = {
             "game": channel_info.get('stream', {}).get('game_name') if channel_info else None,
@@ -127,11 +129,15 @@ def moderate_batch(openai_client, assistant_id, model, thread_id, batch, channel
                 print(f"[FATAL][MODERATION] Single message too large to send, skipping: {batch[0]['id']}")
                 return False
             mid = len(batch) // 2
-            left = moderate_batch(openai_client, assistant_id, model, thread_id, batch[:mid], channel_info, token, client_id)
-            right = moderate_batch(openai_client, assistant_id, model, thread_id, batch[mid:], channel_info, token, client_id)
+            left = moderate_batch(openai_client, assistant_id, model, thread_id, batch[:mid], channel_info, token, client_id, token_bucket)
+            right = moderate_batch(openai_client, assistant_id, model, thread_id, batch[mid:], channel_info, token, client_id, token_bucket)
             return left and right
 
         wait_for_runs_to_complete(openai_client, thread_id, poll_interval=5)
+
+        if token_bucket is not None:
+            tokens_needed = count_tokens(batch_json, model)
+            token_bucket.consume(tokens_needed)
 
         try:
             resp_msg = openai_client.beta.threads.messages.create(
@@ -276,7 +282,7 @@ def batch_worker(stop_event, openai_client, assistant_id, model, thread_id, chan
         run_queue.put((batch.copy(), channel_info))
         batch.clear()
 
-def run_worker(stop_event, openai_client, assistant_id, model, thread_id, client_id, token_manager):
+def run_worker(stop_event, openai_client, assistant_id, model, thread_id, client_id, token_manager, token_bucket: TokenBucket):
     """Process batches from run_queue sequentially without blocking batch_worker."""
     while not stop_event.is_set() or not run_queue.empty():
         try:
@@ -286,7 +292,7 @@ def run_worker(stop_event, openai_client, assistant_id, model, thread_id, client
 
         ok = run_with_timeout(
             moderate_batch,
-            args=(openai_client, assistant_id, model, thread_id, batch, channel_info, token_manager.get_token(), client_id),
+            args=(openai_client, assistant_id, model, thread_id, batch, channel_info, token_manager.get_token(), client_id, token_bucket),
             timeout=MODERATION_TIMEOUT_SECONDS,
         )
 
