@@ -2,6 +2,7 @@ api_key: "sk-get-your-own"
 assistant_id: "make-your-own"
 model: "gpt-4o-mini"
 batch_interval: 10
+tokens_per_minute: 20000
 twitch:
   server: "irc.chat.twitch.tv"
   port: 6697

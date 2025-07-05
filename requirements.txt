@@ -3,3 +3,4 @@ requests
 irc
 openai
 cryptography
+tiktoken
