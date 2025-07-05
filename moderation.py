@@ -16,7 +16,6 @@ consumed_ids = set()
 not_moderated = set()
 
 MAX_OPENAI_CONTENT_SIZE = 256000
-MODERATION_TIMEOUT_SECONDS = 60
 
 def delete_chat_message(broadcaster_id, moderator_id, message_id, token, client_id):
     url = "https://api.twitch.tv/helix/moderation/chat"
@@ -282,7 +281,7 @@ def batch_worker(stop_event, openai_client, assistant_id, model, thread_id, chan
         run_queue.put((batch.copy(), channel_info))
         batch.clear()
 
-def run_worker(stop_event, openai_client, assistant_id, model, thread_id, client_id, token_manager, token_bucket: TokenBucket):
+def run_worker(stop_event, openai_client, assistant_id, model, thread_id, client_id, token_manager, token_bucket: TokenBucket, moderation_timeout=60):
     """Process batches from run_queue sequentially without blocking batch_worker."""
     while not stop_event.is_set() or not run_queue.empty():
         try:
@@ -293,7 +292,7 @@ def run_worker(stop_event, openai_client, assistant_id, model, thread_id, client
         ok = run_with_timeout(
             moderate_batch,
             args=(openai_client, assistant_id, model, thread_id, batch, channel_info, token_manager.get_token(), client_id, token_bucket),
-            timeout=MODERATION_TIMEOUT_SECONDS,
+            timeout=moderation_timeout,
         )
 
         if not ok:
