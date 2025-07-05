@@ -135,7 +135,9 @@ def run_with_timeout(func, args=(), kwargs=None, timeout=60):
         except FuturesTimeoutError:
             print(f"[TIMEOUT][MODERATION] Moderation batch took longer than {timeout} seconds. Skipping this batch (not marking as consumed).")
             return False
-        except Exception as e:
+        except BaseException as e:
+            # Catch BaseException so KeyboardInterrupt does not print a noisy
+            # traceback from this worker thread on program exit.
             print(f"[ERROR][MODERATION][THREAD] {e}")
             return False
 
@@ -350,23 +352,30 @@ def batch_worker(stop_event, openai_client, assistant_id, model, thread_id, chan
 
 def run_worker(stop_event, openai_client, assistant_id, model, thread_id, client_id, token_manager, token_bucket: TokenBucket, moderation_timeout=60):
     """Process batches from run_queue sequentially without blocking batch_worker."""
-    while not stop_event.is_set() or not run_queue.empty():
-        try:
-            batch, channel_info = run_queue.get(timeout=1)
-        except queue.Empty:
-            continue
+    try:
+        while not stop_event.is_set() or not run_queue.empty():
+            try:
+                batch, channel_info = run_queue.get(timeout=1)
+            except queue.Empty:
+                continue
 
-        ok = run_with_timeout(
-            moderate_batch,
-            args=(openai_client, assistant_id, model, thread_id, batch, channel_info, token_manager.get_token(), client_id, token_bucket),
-            timeout=moderation_timeout,
-        )
+            try:
+                ok = run_with_timeout(
+                    moderate_batch,
+                    args=(openai_client, assistant_id, model, thread_id, batch, channel_info, token_manager.get_token(), client_id, token_bucket),
+                    timeout=moderation_timeout,
+                )
+            except KeyboardInterrupt:
+                stop_event.set()
+                break
 
-        if not ok:
-            print(f"[ERROR][BATCH] Moderation failed or timed out or API did not respond. Marking {len(batch)} messages as NOT MODERATED and moving on.")
-            debug_ids = [msg['id'] for msg in batch]
-            not_moderated.update(debug_ids)
-            print(f"[DEBUG][NOT-MODERATED] Message IDs not moderated (sample): {debug_ids[:10]}{' ...' if len(debug_ids) > 10 else ''}")
+            if not ok:
+                print(f"[ERROR][BATCH] Moderation failed or timed out or API did not respond. Marking {len(batch)} messages as NOT MODERATED and moving on.")
+                debug_ids = [msg['id'] for msg in batch]
+                not_moderated.update(debug_ids)
+                print(f"[DEBUG][NOT-MODERATED] Message IDs not moderated (sample): {debug_ids[:10]}{' ...' if len(debug_ids) > 10 else ''}")
+    except KeyboardInterrupt:
+        stop_event.set()
 
 def loss_report():
     missing = produced_ids - consumed_ids
