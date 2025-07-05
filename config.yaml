@@ -1,15 +1,15 @@
-api_key: "sk-get-your-own"
-assistant_id: "make-your-own"
-model: "gpt-4o-mini"
-batch_interval: 10
-tokens_per_minute: 20000
-moderation_timeout: 60
-max_openai_content_size: 256000
-max_rate_limit_retries: 3
-twitch:
-  server: "irc.chat.twitch.tv"
-  port: 6697
-  nickname: "LordFloofen"
-  client_id: "get-your-own"
-  client_secret: "get-your-own"
-  channel: "#some-channel"
+api_key: "sk-get-your-own"      # OpenAI API key, used for the chat completion API
+assistant_id: "make-your-own"   # OpenAI Assistant ID, used for the chat completion API
+model: "gpt-4o-mini"            # OpenAI model to use. I like 4o-mimi. It's not that serious.
+batch_interval: 10              # how often to process batches of messages in seconds
+tokens_per_minute: 200000       # your OpenAI API token per minute rate limit
+moderation_timeout: 60          # how long to wait for OpenAI API to respond before timing out
+max_openai_content_size: 256000 # not to exceed 256000 tokens per request. OpenAI API limit.
+max_rate_limit_retries: 3       # how many times to retry on rate limit errors
+twitch:                         # Twitch configuration
+  server: "irc.chat.twitch.tv"  # Twitch IRC server
+  port: 6697                    # Twitch IRC port, 6697 for SSL
+  nickname: "your-bot"          # Twitch bot nickname
+  client_id: "get-your-own"     # Twitch client ID, used for authentication
+  client_secret: "get-your-own" # Twitch client secret, used for authentication
+  channel: "#some-channel"      # Twitch channel to join, e.g. "#some-channel"
