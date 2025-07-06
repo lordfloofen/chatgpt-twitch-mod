@@ -158,7 +158,6 @@ def moderate_batch(
     openai_client,
     assistant_id,
     escalate_assistant_id,
-    model,
     thread_id,
     batch,
     channel_info=None,
@@ -183,15 +182,15 @@ def moderate_batch(
                 print(f"[FATAL][MODERATION] Single message too large to send, skipping: {batch[0]['id']}")
                 return False
             mid = len(batch) // 2
-            left = moderate_batch(openai_client, assistant_id, escalate_assistant_id, model, thread_id, batch[:mid], channel_info, token, client_id, token_bucket)
-            right = moderate_batch(openai_client, assistant_id, escalate_assistant_id, model, thread_id, batch[mid:], channel_info, token, client_id, token_bucket)
+            left = moderate_batch(openai_client, assistant_id, escalate_assistant_id, thread_id, batch[:mid], channel_info, token, client_id, token_bucket)
+            right = moderate_batch(openai_client, assistant_id, escalate_assistant_id, thread_id, batch[mid:], channel_info, token, client_id, token_bucket)
             return left and right
 
         for attempt in range(MAX_RATE_LIMIT_RETRIES + 1):
             wait_for_runs_to_complete(openai_client, thread_id, poll_interval=5)
 
             if token_bucket is not None:
-                tokens_needed = count_tokens(batch_json, model)
+                tokens_needed = count_tokens(batch_json)
                 token_bucket.consume(tokens_needed)
 
             try:
@@ -214,7 +213,6 @@ def moderate_batch(
                 run = openai_client.beta.threads.runs.create(
                     thread_id=thread_id,
                     assistant_id=assistant_id,
-                    model=model,
                 )
             except Exception as e:
                 msg = str(e)
@@ -338,7 +336,7 @@ def get_channel_info(channel, client_id, token):
 
     return info
 
-def batch_worker(stop_event, openai_client, assistant_id, model, thread_id, channel, client_id, token_manager, batch_interval=2):
+def batch_worker(stop_event, openai_client, assistant_id, thread_id, channel, client_id, token_manager, batch_interval=2):
     """Process queued messages in batches and moderate them."""
     batch = []
     last_send = time.time()
@@ -376,7 +374,7 @@ def batch_worker(stop_event, openai_client, assistant_id, model, thread_id, chan
         run_queue.put((batch.copy(), channel_info))
         batch.clear()
 
-def run_worker(stop_event, openai_client, assistant_id, escalate_assistant_id, model, thread_id, client_id, token_manager, token_bucket: TokenBucket, moderation_timeout=60):
+def run_worker(stop_event, openai_client, assistant_id, escalate_assistant_id, thread_id, client_id, token_manager, token_bucket: TokenBucket, moderation_timeout=60):
     """Process batches from run_queue sequentially without blocking batch_worker."""
     try:
         while not stop_event.is_set() or not run_queue.empty():
@@ -391,7 +389,7 @@ def run_worker(stop_event, openai_client, assistant_id, escalate_assistant_id, m
             try:
                 ok = run_with_timeout(
                     moderate_batch,
-                    args=(openai_client, assistant_id, escalate_assistant_id, model, thread_id, batch, channel_info, token_manager.get_token(), client_id, token_bucket),
+                    args=(openai_client, assistant_id, escalate_assistant_id, thread_id, batch, channel_info, token_manager.get_token(), client_id, token_bucket),
                     timeout=moderation_timeout,
                 )
             except KeyboardInterrupt:

@@ -8,6 +8,8 @@ An AI-powered moderation bot for Twitch chat that uses OpenAI's GPT models to de
 - AI-powered content analysis using OpenAI's GPT models
 - Configurable moderation thresholds based on user roles (mod, VIP, subscriber)
 - Automatic message deletion for violations
+- Uses two OpenAI assistants: a moderation assistant and an escalation assistant
+- Moderation assistant tested with GPT-4o-mini and escalation assistant with GPT-4o
 - Escalation assistant runs in a separate thread to track users across threads and issue timeouts or bans without blocking regular moderation
 - Multiple violations from the same user are grouped into a single escalation request
 - Detailed logging of chat and moderation actions
@@ -34,7 +36,6 @@ pip install -r requirements.txt
 api_key: "your-openai-api-key"
 assistant_id: "your-assistant-id"
 escalation_assistant_id: "your-escalation-assistant-id"
-model: "gpt-4o-mini"
 batch_interval: 10
 tokens_per_minute: 20000
 moderation_timeout: 60
@@ -82,7 +83,7 @@ The bot creates two log files:
 See `config.yaml` for all configuration options. Key settings:
 
 - `batch_interval`: Time in seconds between moderation batches
-- `model`: OpenAI model to use for moderation
+- Models are configured in the assistant settings (e.g. GPT-4o-mini for moderation and GPT-4o for escalation)
 - `tokens_per_minute`: Rate limit for OpenAI API usage
 - `moderation_timeout`: Timeout in seconds for each moderation batch
 - `escalation_assistant_id`: Assistant used to analyze repeated offenses
