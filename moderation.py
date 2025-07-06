@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 import requests
 import re
 import math
+from utils import vprint
 
 from escalate import escalate_queue
 
@@ -357,7 +358,7 @@ def batch_worker(stop_event, openai_client, assistant_id, model, thread_id, chan
                     channel_info = None
 
             if batch and (now - last_send >= batch_interval):
-                print(f"[INFO] Queuing batch of {len(batch)} messages for moderation...")
+                vprint(1, f"[INFO] Queuing batch of {len(batch)} messages for moderation...")
                 run_queue.put((batch.copy(), channel_info))
                 batch.clear()
                 last_send = now
@@ -366,7 +367,7 @@ def batch_worker(stop_event, openai_client, assistant_id, model, thread_id, chan
             print(f"[ERROR][BATCH] {e}")
 
     if batch:
-        print(f"[INFO] Final flush of {len(batch)} messages...")
+        vprint(1, f"[INFO] Final flush of {len(batch)} messages...")
         run_queue.put((batch.copy(), channel_info))
         batch.clear()
 

@@ -9,6 +9,7 @@ import socketserver
 import urllib.parse
 from typing import Optional
 import re
+from utils import vprint
 
 # You need to install: cryptography
 from cryptography import x509
@@ -96,23 +97,23 @@ class TwitchOAuthTokenManager:
         Get a valid access token, refreshing or authorizing if necessary.
         """
         with self._lock:
-            print(f"[OAUTH DEBUG] Loaded token: {self.token_data}")
+            vprint(2, f"[OAUTH DEBUG] Loaded token: {self.token_data}")
             if (self.token_data
                 and self.token_data.get("access_token")
                 and self.token_data.get("expires_at", 0) > time.time() + 120):
-                print("[OAUTH] Using cached token.")
+                vprint(1, "[OAUTH] Using cached token.")
                 return self.token_data["access_token"]
 
             if self.token_data and self.token_data.get("refresh_token"):
                 try:
-                    print("[OAUTH] Attempting to refresh token.")
+                    vprint(1, "[OAUTH] Attempting to refresh token.")
                     self.refresh_token()
                     if self.token_data.get("access_token"):
                         return self.token_data["access_token"]
                 except Exception as e:
                     print(f"[OAUTH ERROR] Refresh failed: {e}")
 
-            print("[OAUTH] No valid token. Starting authorization flow...")
+            vprint(1, "[OAUTH] No valid token. Starting authorization flow...")
             self.authorize()
             if self.token_data and self.token_data.get("access_token"):
                 return self.token_data["access_token"]
@@ -164,16 +165,16 @@ class TwitchOAuthTokenManager:
                 t = threading.Thread(target=httpd.serve_forever)
                 t.daemon = True
                 t.start()
-                print("[OAUTH] Waiting for browser callback on https://localhost:8443/callback ...")
+                vprint(1, "[OAUTH] Waiting for browser callback on https://localhost:8443/callback ...")
                 for _ in range(300):
                     if "code" in code_holder:
                         break
                     time.sleep(1)
                 httpd.shutdown()
         except Exception as e:
-            print(f"[OAUTH] Local callback server error: {e}")
+            vprint(1, f"[OAUTH] Local callback server error: {e}")
         if "code" not in code_holder:
-            print("[OAUTH] Callback not received.\n"
+            vprint(1, "[OAUTH] Callback not received.\n"
                   "If the browser opened, copy the full URL you were redirected to"
                   " and paste it below.")
             manual_url = input("Paste redirect URL (or press Enter to abort): ").strip()
@@ -187,7 +188,7 @@ class TwitchOAuthTokenManager:
                     pass
         if "code" not in code_holder:
             raise RuntimeError("OAuth failed: Did not receive code.")
-        print("[OAUTH] Received code. Requesting token...")
+        vprint(1, "[OAUTH] Received code. Requesting token...")
         import requests
         data = {
             "client_id": self.client_id,
@@ -209,13 +210,13 @@ class TwitchOAuthTokenManager:
             "expires_at": time.time() + token_json.get("expires_in", 0)
         }
         save_twitch_token(self.token_data)
-        print("[OAUTH] Token obtained and saved.")
+        vprint(1, "[OAUTH] Token obtained and saved.")
 
     def refresh_token(self):
         """
         Uses the refresh_token to obtain a new access token.
         """
-        print("[OAUTH] Refreshing token...")
+        vprint(1, "[OAUTH] Refreshing token...")
         import requests
         data = {
             "client_id": self.client_id,
@@ -236,4 +237,4 @@ class TwitchOAuthTokenManager:
             "expires_at": time.time() + token_json.get("expires_in", 0)
         })
         save_twitch_token(self.token_data)
-        print("[OAUTH] Token refreshed and saved.")
+        vprint(1, "[OAUTH] Token refreshed and saved.")

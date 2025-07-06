@@ -1,4 +1,5 @@
 import logging
+import argparse
 
 # --- Main moderation/chat logs to chat_log.txt ---
 logging.basicConfig(
@@ -36,6 +37,7 @@ from irc_client import run_irc_forever
 from moderation import message_queue, batch_worker, run_worker, loss_report, configure_limits
 from escalate import escalate_worker
 from token_utils import TokenBucket
+from utils import set_verbosity
 
 try:
     from openai import OpenAI
@@ -76,6 +78,12 @@ def get_thread_id(client_ai, channel, thread_map_file="thread_map.json"):
     return thread_id
 
 def main():
+    parser = argparse.ArgumentParser(description="ChatGPT Twitch moderation bot")
+    parser.add_argument("-v", action="count", default=0,
+                        help="Increase verbosity (-vv for debug messages)")
+    args = parser.parse_args()
+    set_verbosity(args.v)
+
     config = load_config()
 
     # --- Twitch/OpenAI setup ---
