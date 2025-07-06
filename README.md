@@ -9,6 +9,7 @@ An AI-powered moderation bot for Twitch chat that uses OpenAI's GPT models to de
 - Configurable moderation thresholds based on user roles (mod, VIP, subscriber)
 - Automatic message deletion for violations
 - Escalation assistant runs in a separate thread to track users across threads and issue timeouts or bans without blocking regular moderation
+- Multiple violations from the same user are grouped into a single escalation request
 - Detailed logging of chat and moderation actions
 - Support for OAuth authentication with Twitch
 - Batch processing to optimize API usage

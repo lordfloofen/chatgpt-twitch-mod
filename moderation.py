@@ -251,6 +251,7 @@ def moderate_batch(
                 if isinstance(flagged, list) and flagged:
                     broadcaster_id = channel_info['user']['id']
                     moderator_id = channel_info['user']['id']
+                    violations_per_user = {}
                     for msg in flagged:
                         msg_id = msg.get("id")
                         if msg_id:
@@ -261,12 +262,16 @@ def moderate_batch(
                                 token,
                                 client_id
                             )
-                        # escalate behavior per user asynchronously
                         if escalate_assistant_id:
+                            user = msg.get("user")
+                            if user:
+                                violations_per_user.setdefault(user, []).append(msg)
+                    if escalate_assistant_id:
+                        for user, violations in violations_per_user.items():
                             escalate_queue.put(
                                 {
-                                    "username": msg.get("user"),
-                                    "violation": msg,
+                                    "username": user,
+                                    "violations": violations,
                                     "broadcaster_id": broadcaster_id,
                                     "moderator_id": moderator_id,
                                 }

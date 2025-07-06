@@ -51,13 +51,14 @@ def wait_for_run_completion(openai_client, thread_id, run, poll_interval=5, time
             return None
 
 
-def escalate_user_action(openai_client, assistant_id, model, username, violation, thread_map, poll_interval=5, timeout=120):
+def escalate_user_action(openai_client, assistant_id, model, username, violations, thread_map, poll_interval=5, timeout=120):
+    """Send a list of violations for a single user to the escalation assistant."""
     thread_id = get_user_thread_id(openai_client, username, thread_map)
     try:
         openai_client.beta.threads.messages.create(
             thread_id=thread_id,
             role="user",
-            content=json.dumps(violation),
+            content=json.dumps({"violations": violations}),
         )
         run = openai_client.beta.threads.runs.create(
             thread_id=thread_id,
@@ -163,7 +164,7 @@ def escalate_worker(stop_event, openai_client, assistant_id, model, token_manage
             continue
 
         username = task.get("username")
-        violation = task.get("violation")
+        violations = task.get("violations") or []
         broadcaster_id = task.get("broadcaster_id")
         moderator_id = task.get("moderator_id")
 
@@ -173,7 +174,7 @@ def escalate_worker(stop_event, openai_client, assistant_id, model, token_manage
                 assistant_id,
                 model,
                 username,
-                violation,
+                violations,
                 user_threads,
             )
             result = parse_escalation_result(result_text)
