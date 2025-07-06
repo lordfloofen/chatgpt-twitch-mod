@@ -53,3 +53,26 @@ def get_config_value(config, path, default=None):
         else:
             return default
     return v
+
+
+# --- Verbosity handling ----------------------------------------------------
+
+# Global verbosity level set via command line flags. 0 = quiet, 1 = verbose,
+# 2 = debug.
+VERBOSITY = 0
+
+
+def set_verbosity(level: int) -> None:
+    """Set global verbosity level."""
+    global VERBOSITY
+    try:
+        VERBOSITY = int(level)
+    except Exception:
+        VERBOSITY = 0
+
+
+def vprint(level: int, message: str) -> None:
+    """Print ``message`` if ``VERBOSITY`` >= ``level``."""
+    if VERBOSITY >= level:
+        print(message)
+

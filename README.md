@@ -53,8 +53,9 @@ twitch:
 
 Start the bot:
 ```sh
-python bot.py
+python bot.py [-v|-vv]
 ```
+Use `-v` to print informational messages and `-vv` to include OAuth debug output.
 
 On first run, the bot will:
 1. Generate required SSL certificates for OAuth

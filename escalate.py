@@ -177,6 +177,7 @@ def escalate_worker(stop_event, openai_client, assistant_id, model, token_manage
                 violations,
                 user_threads,
             )
+            print(f"[ESCALATION] {result_text or ''}")
             result = parse_escalation_result(result_text)
             action = (result.get("action") or "").lower()
             if action in {"timeout", "ban"} and username:
