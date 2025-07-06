@@ -134,7 +134,12 @@ def run_with_timeout(func, args=(), kwargs=None, timeout=60):
     if kwargs is None:
         kwargs = {}
     with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(func, *args, **kwargs)
+        try:
+            future = executor.submit(func, *args, **kwargs)
+        except RuntimeError as e:
+            # Happens during interpreter shutdown if threads are still running
+            print(f"[ERROR][MODERATION][THREADPOOL] {e}")
+            return False
         try:
             return future.result(timeout=timeout)
         except FuturesTimeoutError:
@@ -380,6 +385,9 @@ def run_worker(stop_event, openai_client, assistant_id, escalate_assistant_id, m
             except queue.Empty:
                 continue
 
+            if stop_event.is_set():
+                break
+
             try:
                 ok = run_with_timeout(
                     moderate_batch,
@@ -387,6 +395,11 @@ def run_worker(stop_event, openai_client, assistant_id, escalate_assistant_id, m
                     timeout=moderation_timeout,
                 )
             except KeyboardInterrupt:
+                stop_event.set()
+                break
+            except RuntimeError as e:
+                # Happens if interpreter is shutting down while we're still processing
+                print(f"[ERROR][MODERATION][WORKER] {e}")
                 stop_event.set()
                 break
 
