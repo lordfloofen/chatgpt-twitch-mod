@@ -8,6 +8,7 @@ import http.server
 import socketserver
 import urllib.parse
 from typing import Optional
+import re
 
 # You need to install: cryptography
 from cryptography import x509
@@ -86,32 +87,36 @@ class TwitchOAuthTokenManager:
         self.client_id = client_id
         self.client_secret = client_secret
         self.token_data = load_twitch_token()
+        # Serialize access to refresh/authorize to prevent multiple threads
+        # from triggering concurrent OAuth flows.
+        self._lock = threading.Lock()
 
     def get_token(self) -> str:
         """
         Get a valid access token, refreshing or authorizing if necessary.
         """
-        print(f"[OAUTH DEBUG] Loaded token: {self.token_data}")
-        if (self.token_data
-            and self.token_data.get("access_token")
-            and self.token_data.get("expires_at", 0) > time.time() + 120):
-            print("[OAUTH] Using cached token.")
-            return self.token_data["access_token"]
+        with self._lock:
+            print(f"[OAUTH DEBUG] Loaded token: {self.token_data}")
+            if (self.token_data
+                and self.token_data.get("access_token")
+                and self.token_data.get("expires_at", 0) > time.time() + 120):
+                print("[OAUTH] Using cached token.")
+                return self.token_data["access_token"]
 
-        if self.token_data and self.token_data.get("refresh_token"):
-            try:
-                print("[OAUTH] Attempting to refresh token.")
-                self.refresh_token()
-                if self.token_data.get("access_token"):
-                    return self.token_data["access_token"]
-            except Exception as e:
-                print(f"[OAUTH ERROR] Refresh failed: {e}")
+            if self.token_data and self.token_data.get("refresh_token"):
+                try:
+                    print("[OAUTH] Attempting to refresh token.")
+                    self.refresh_token()
+                    if self.token_data.get("access_token"):
+                        return self.token_data["access_token"]
+                except Exception as e:
+                    print(f"[OAUTH ERROR] Refresh failed: {e}")
 
-        print("[OAUTH] No valid token. Starting authorization flow...")
-        self.authorize()
-        if self.token_data and self.token_data.get("access_token"):
-            return self.token_data["access_token"]
-        raise RuntimeError("OAuth failed: No access token obtained!")
+            print("[OAUTH] No valid token. Starting authorization flow...")
+            self.authorize()
+            if self.token_data and self.token_data.get("access_token"):
+                return self.token_data["access_token"]
+            raise RuntimeError("OAuth failed: No access token obtained!")
 
     def authorize(self):
         """
@@ -148,21 +153,40 @@ class TwitchOAuthTokenManager:
                     self.wfile.write(b"Authorization failed or was cancelled.")
             def log_message(self, *a, **k): pass
 
-        with socketserver.TCPServer(("localhost", 8443), Handler) as httpd:
-            ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-            ssl_context.load_cert_chain(certfile=certfile, keyfile=keyfile)
-            httpd.socket = ssl_context.wrap_socket(httpd.socket, server_side=True)
-            t = threading.Thread(target=httpd.serve_forever)
-            t.daemon = True
-            t.start()
-            print("[OAUTH] Waiting for browser callback on https://localhost:8443/callback ...")
-            for _ in range(300):
-                if "code" in code_holder:
-                    break
-                time.sleep(1)
-            httpd.shutdown()
+        class ReusableTCPServer(socketserver.TCPServer):
+            allow_reuse_address = True
+
+        try:
+            with ReusableTCPServer(("localhost", 8443), Handler) as httpd:
+                ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                ssl_context.load_cert_chain(certfile=certfile, keyfile=keyfile)
+                httpd.socket = ssl_context.wrap_socket(httpd.socket, server_side=True)
+                t = threading.Thread(target=httpd.serve_forever)
+                t.daemon = True
+                t.start()
+                print("[OAUTH] Waiting for browser callback on https://localhost:8443/callback ...")
+                for _ in range(300):
+                    if "code" in code_holder:
+                        break
+                    time.sleep(1)
+                httpd.shutdown()
+        except Exception as e:
+            print(f"[OAUTH] Local callback server error: {e}")
         if "code" not in code_holder:
-            raise RuntimeError("OAuth failed: Did not receive code in time.")
+            print("[OAUTH] Callback not received.\n"
+                  "If the browser opened, copy the full URL you were redirected to"
+                  " and paste it below.")
+            manual_url = input("Paste redirect URL (or press Enter to abort): ").strip()
+            if manual_url:
+                try:
+                    parsed = urllib.parse.urlparse(manual_url)
+                    qs = urllib.parse.parse_qs(parsed.query)
+                    if "code" in qs:
+                        code_holder["code"] = qs["code"][0]
+                except Exception:
+                    pass
+        if "code" not in code_holder:
+            raise RuntimeError("OAuth failed: Did not receive code.")
         print("[OAUTH] Received code. Requesting token...")
         import requests
         data = {
