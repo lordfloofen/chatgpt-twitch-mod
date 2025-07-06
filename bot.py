@@ -34,6 +34,7 @@ import json
 from twitch_auth import TwitchOAuthTokenManager
 from irc_client import run_irc_forever
 from moderation import message_queue, batch_worker, run_worker, loss_report, configure_limits
+from escalate import escalate_worker
 from token_utils import TokenBucket
 
 try:
@@ -81,6 +82,7 @@ def main():
     twitch = config["twitch"]
     api_key = config["api_key"]
     assistant_id = config["assistant_id"]
+    escalate_assistant_id = config.get("escalation_assistant_id")
     model = config.get("model", "gpt-4o-mini")
     batch_interval = config.get("batch_interval", 2)
     tokens_per_minute = config.get("tokens_per_minute", 20000)
@@ -130,6 +132,7 @@ def main():
             stop_event,
             client_ai,
             assistant_id,
+            escalate_assistant_id,
             model,
             thread_id,
             twitch["client_id"],
@@ -141,6 +144,21 @@ def main():
     )
     run_thread.start()
 
+    if escalate_assistant_id:
+        escalate_thread = threading.Thread(
+            target=escalate_worker,
+            args=(
+                stop_event,
+                client_ai,
+                escalate_assistant_id,
+                model,
+                token_manager,
+                twitch["client_id"],
+            ),
+            daemon=True,
+        )
+        escalate_thread.start()
+
     try:
         print("[BOT] Starting IRC loop...")
         run_irc_forever(config, token_manager, message_queue)
@@ -150,6 +168,8 @@ def main():
         stop_event.set()
         batch_thread.join(timeout=10)
         run_thread.join(timeout=10)
+        if escalate_assistant_id:
+            escalate_thread.join(timeout=10)
         loss_report()
 
 if __name__ == "__main__":

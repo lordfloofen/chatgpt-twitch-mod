@@ -1,5 +1,6 @@
 api_key: "sk-get-your-own"      # OpenAI API key, used for the chat completion API
 assistant_id: "make-your-own"   # OpenAI Assistant ID, used for the chat completion API
+escalation_assistant_id: "make-your-own-escalation" # OpenAI Assistant ID for escalation checks
 model: "gpt-4o-mini"            # OpenAI model to use. I like 4o-mimi. It's not that serious.
 batch_interval: 10              # how often to process batches of messages in seconds
 tokens_per_minute: 200000       # your OpenAI API token per minute rate limit

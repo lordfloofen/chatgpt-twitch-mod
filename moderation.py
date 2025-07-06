@@ -9,6 +9,8 @@ import requests
 import re
 import math
 
+from escalate import escalate_queue
+
 # --- Message queue used for incoming messages from IRC ---
 message_queue = queue.Queue()
 run_queue = queue.Queue()
@@ -19,6 +21,8 @@ not_moderated = set()
 
 MAX_OPENAI_CONTENT_SIZE = 256000
 MAX_RATE_LIMIT_RETRIES = 3
+
+# Per-user escalation threads handled by escalate_worker
 
 
 def configure_limits(max_openai_content_size: int | None = None, max_rate_limit_retries: int | None = None) -> None:
@@ -147,6 +151,7 @@ from token_utils import count_tokens, TokenBucket
 def moderate_batch(
     openai_client,
     assistant_id,
+    escalate_assistant_id,
     model,
     thread_id,
     batch,
@@ -172,8 +177,8 @@ def moderate_batch(
                 print(f"[FATAL][MODERATION] Single message too large to send, skipping: {batch[0]['id']}")
                 return False
             mid = len(batch) // 2
-            left = moderate_batch(openai_client, assistant_id, model, thread_id, batch[:mid], channel_info, token, client_id, token_bucket)
-            right = moderate_batch(openai_client, assistant_id, model, thread_id, batch[mid:], channel_info, token, client_id, token_bucket)
+            left = moderate_batch(openai_client, assistant_id, escalate_assistant_id, model, thread_id, batch[:mid], channel_info, token, client_id, token_bucket)
+            right = moderate_batch(openai_client, assistant_id, escalate_assistant_id, model, thread_id, batch[mid:], channel_info, token, client_id, token_bucket)
             return left and right
 
         for attempt in range(MAX_RATE_LIMIT_RETRIES + 1):
@@ -246,6 +251,7 @@ def moderate_batch(
                 if isinstance(flagged, list) and flagged:
                     broadcaster_id = channel_info['user']['id']
                     moderator_id = channel_info['user']['id']
+                    violations_per_user = {}
                     for msg in flagged:
                         msg_id = msg.get("id")
                         if msg_id:
@@ -255,6 +261,20 @@ def moderate_batch(
                                 msg_id,
                                 token,
                                 client_id
+                            )
+                        if escalate_assistant_id:
+                            user = msg.get("user")
+                            if user:
+                                violations_per_user.setdefault(user, []).append(msg)
+                    if escalate_assistant_id:
+                        for user, violations in violations_per_user.items():
+                            escalate_queue.put(
+                                {
+                                    "username": user,
+                                    "violations": violations,
+                                    "broadcaster_id": broadcaster_id,
+                                    "moderator_id": moderator_id,
+                                }
                             )
             except Exception as e:
                 print(f"[ERROR][MODERATION][DELETE] Failed to parse/delete: {e}")
@@ -350,7 +370,7 @@ def batch_worker(stop_event, openai_client, assistant_id, model, thread_id, chan
         run_queue.put((batch.copy(), channel_info))
         batch.clear()
 
-def run_worker(stop_event, openai_client, assistant_id, model, thread_id, client_id, token_manager, token_bucket: TokenBucket, moderation_timeout=60):
+def run_worker(stop_event, openai_client, assistant_id, escalate_assistant_id, model, thread_id, client_id, token_manager, token_bucket: TokenBucket, moderation_timeout=60):
     """Process batches from run_queue sequentially without blocking batch_worker."""
     try:
         while not stop_event.is_set() or not run_queue.empty():
@@ -362,7 +382,7 @@ def run_worker(stop_event, openai_client, assistant_id, model, thread_id, client
             try:
                 ok = run_with_timeout(
                     moderate_batch,
-                    args=(openai_client, assistant_id, model, thread_id, batch, channel_info, token_manager.get_token(), client_id, token_bucket),
+                    args=(openai_client, assistant_id, escalate_assistant_id, model, thread_id, batch, channel_info, token_manager.get_token(), client_id, token_bucket),
                     timeout=moderation_timeout,
                 )
             except KeyboardInterrupt:
