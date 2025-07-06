@@ -8,6 +8,7 @@ import http.server
 import socketserver
 import urllib.parse
 from typing import Optional
+import re
 
 # You need to install: cryptography
 from cryptography import x509
@@ -162,7 +163,20 @@ class TwitchOAuthTokenManager:
                 time.sleep(1)
             httpd.shutdown()
         if "code" not in code_holder:
-            raise RuntimeError("OAuth failed: Did not receive code in time.")
+            print("[OAUTH] Callback not received.\n"
+                  "If the browser opened, copy the full URL you were redirected to"
+                  " and paste it below.")
+            manual_url = input("Paste redirect URL (or press Enter to abort): ").strip()
+            if manual_url:
+                try:
+                    parsed = urllib.parse.urlparse(manual_url)
+                    qs = urllib.parse.parse_qs(parsed.query)
+                    if "code" in qs:
+                        code_holder["code"] = qs["code"][0]
+                except Exception:
+                    pass
+        if "code" not in code_holder:
+            raise RuntimeError("OAuth failed: Did not receive code.")
         print("[OAUTH] Received code. Requesting token...")
         import requests
         data = {
