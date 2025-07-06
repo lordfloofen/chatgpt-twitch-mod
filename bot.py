@@ -91,7 +91,6 @@ def main():
     api_key = config["api_key"]
     assistant_id = config["assistant_id"]
     escalate_assistant_id = config.get("escalation_assistant_id")
-    model = config.get("model", "gpt-4o-mini")
     batch_interval = config.get("batch_interval", 2)
     tokens_per_minute = config.get("tokens_per_minute", 20000)
     moderation_timeout = config.get("moderation_timeout", 60)
@@ -123,7 +122,6 @@ def main():
             stop_event,
             client_ai,
             assistant_id,
-            model,
             thread_id,
             channel,
             twitch["client_id"],
@@ -141,7 +139,6 @@ def main():
             client_ai,
             assistant_id,
             escalate_assistant_id,
-            model,
             thread_id,
             twitch["client_id"],
             token_manager,
@@ -159,7 +156,6 @@ def main():
                 stop_event,
                 client_ai,
                 escalate_assistant_id,
-                model,
                 token_manager,
                 twitch["client_id"],
             ),

@@ -51,7 +51,7 @@ def wait_for_run_completion(openai_client, thread_id, run, poll_interval=5, time
             return None
 
 
-def escalate_user_action(openai_client, assistant_id, model, username, violations, thread_map, poll_interval=5, timeout=120):
+def escalate_user_action(openai_client, assistant_id, username, violations, thread_map, poll_interval=5, timeout=120):
     """Send a list of violations for a single user to the escalation assistant."""
     thread_id = get_user_thread_id(openai_client, username, thread_map)
     try:
@@ -63,7 +63,6 @@ def escalate_user_action(openai_client, assistant_id, model, username, violation
         run = openai_client.beta.threads.runs.create(
             thread_id=thread_id,
             assistant_id=assistant_id,
-            model=model,
         )
     except Exception as e:
         print(f"[ERROR][ESCALATION] Exception starting run: {e}")
@@ -155,7 +154,7 @@ def ban_user(broadcaster_id, moderator_id, user_id, token, client_id, reason="Ba
     return False
 
 
-def escalate_worker(stop_event, openai_client, assistant_id, model, token_manager, client_id):
+def escalate_worker(stop_event, openai_client, assistant_id, token_manager, client_id):
     """Background worker to process escalation tasks without blocking moderation."""
     while not stop_event.is_set() or not escalate_queue.empty():
         try:
@@ -172,7 +171,6 @@ def escalate_worker(stop_event, openai_client, assistant_id, model, token_manage
             result_text = escalate_user_action(
                 openai_client,
                 assistant_id,
-                model,
                 username,
                 violations,
                 user_threads,
