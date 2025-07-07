@@ -202,8 +202,8 @@ def warn_user(broadcaster_id, moderator_id, user_id, token, client_id, reason="W
     return False
 
 
-def send_chat_message(broadcaster_id, moderator_id, token, client_id, message):
-    """Send a chat message as the moderator."""
+def send_chat_message(broadcaster_id, sender_id, token, client_id, message):
+    """Send a chat message as ``sender_id``."""
     url = "https://api.twitch.tv/helix/chat/messages"
     headers = {
         "Client-ID": client_id,
@@ -212,7 +212,7 @@ def send_chat_message(broadcaster_id, moderator_id, token, client_id, message):
     }
     params = {
         "broadcaster_id": broadcaster_id,
-        "moderator_id": moderator_id,
+        "sender_id": sender_id,
     }
     data = {"message": message}
     try:
