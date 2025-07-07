@@ -7,6 +7,7 @@ import hashlib
 # from moderation import message_queue
 # For a clean module, message_queue is passed in at setup.
 
+
 def run_irc_forever(config, token_manager, message_queue=None):
     """
     Connects to Twitch IRC and processes chat events indefinitely.
@@ -30,8 +31,7 @@ def run_irc_forever(config, token_manager, message_queue=None):
 
         def connect(self, address):
             sock = self.ssl_context.wrap_socket(
-                irc.client.socket.socket(),
-                server_hostname=address[0]
+                irc.client.socket.socket(), server_hostname=address[0]
             )
             sock.connect(address)
             return sock
@@ -39,14 +39,17 @@ def run_irc_forever(config, token_manager, message_queue=None):
         @property
         def wrapper(self):
             def wrap(sock, *args, **kwargs):
-                if 'server_hostname' not in kwargs or not kwargs['server_hostname']:
-                    kwargs['server_hostname'] = self._server_hostname
+                if "server_hostname" not in kwargs or not kwargs["server_hostname"]:
+                    kwargs["server_hostname"] = self._server_hostname
                 return self.ssl_context.wrap_socket(sock, *args, **kwargs)
+
             return wrap
 
     def on_connect(connection, event):
         # Request IRCv3 tags capability before joining channel
-        connection.cap('REQ', ':twitch.tv/tags', ':twitch.tv/commands', ':twitch.tv/membership')
+        connection.cap(
+            "REQ", ":twitch.tv/tags", ":twitch.tv/commands", ":twitch.tv/membership"
+        )
         connection.join(channel)
         print(f"[IRC] Connected and joined {channel}")
 
@@ -59,14 +62,17 @@ def run_irc_forever(config, token_manager, message_queue=None):
         timestamp = datetime.now(timezone.utc).isoformat()
 
         # Twitch sends tags as a list of dicts or a dict, normalize to dict
-        tags_raw = getattr(event, 'tags', {}) or {}
+        tags_raw = getattr(event, "tags", {}) or {}
         if isinstance(tags_raw, list):
-            tags = {tag['key']: tag['value'] for tag in tags_raw}
+            tags = {tag["key"]: tag["value"] for tag in tags_raw}
         else:
             tags = tags_raw
-        badges = tags.get('badges', '')
+        badges = tags.get("badges", "")
 
-        msg_id = tags.get('id') or hashlib.md5((user + message + timestamp).encode()).hexdigest()
+        msg_id = (
+            tags.get("id")
+            or hashlib.md5((user + message + timestamp).encode()).hexdigest()
+        )
         msg_obj = {
             "id": msg_id,
             "user": user,
@@ -77,7 +83,7 @@ def run_irc_forever(config, token_manager, message_queue=None):
         }
         if message_queue:
             message_queue.put(msg_obj)
-        #print(f"[IRC][{user}] {message}")
+        # print(f"[IRC][{user}] {message}")
 
     while True:
         try:
@@ -94,4 +100,5 @@ def run_irc_forever(config, token_manager, message_queue=None):
         except Exception as e:
             print(f"[IRC][WARN] Connection lost or error: {e}. Reconnecting in 5s...")
             import time
+
             time.sleep(5)

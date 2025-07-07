@@ -2,7 +2,7 @@ import json
 import time
 import queue
 import requests
-from utils import load_json, save_json
+from utils import load_json, save_json, wait_for_run_completion
 
 THREADS_FILE = "user_threads.json"
 
@@ -32,26 +32,15 @@ def get_user_thread_id(openai_client, username, thread_map):
     return thread.id
 
 
-def wait_for_run_completion(openai_client, thread_id, run, poll_interval=5, timeout=120):
-    start = time.time()
-    while True:
-        try:
-            status = openai_client.beta.threads.runs.retrieve(run.id, thread_id=thread_id)
-            if status.status == "completed":
-                return status
-            if status.status in ("failed", "cancelled", "expired"):
-                print(f"[ERROR][ESCALATION] Run status for {run.id} is {status.status}")
-                return status
-            if time.time() - start > timeout:
-                print(f"[ERROR][ESCALATION] Timed out waiting for run {run.id} on thread {thread_id}")
-                return status
-            time.sleep(poll_interval)
-        except Exception as e:
-            print(f"[ERROR][ESCALATION] Exception while waiting for run: {e}")
-            return None
-
-
-def escalate_user_action(openai_client, assistant_id, username, violations, thread_map, poll_interval=5, timeout=120):
+def escalate_user_action(
+    openai_client,
+    assistant_id,
+    username,
+    violations,
+    thread_map,
+    poll_interval=5,
+    timeout=120,
+):
     """Send a list of violations for a single user to the escalation assistant."""
     thread_id = get_user_thread_id(openai_client, username, thread_map)
     try:
@@ -68,7 +57,9 @@ def escalate_user_action(openai_client, assistant_id, username, violations, thre
         print(f"[ERROR][ESCALATION] Exception starting run: {e}")
         return None
 
-    status = wait_for_run_completion(openai_client, thread_id, run, poll_interval, timeout)
+    status = wait_for_run_completion(
+        openai_client, thread_id, run, poll_interval, timeout
+    )
     if not status or status.status != "completed":
         return None
     try:
@@ -102,7 +93,9 @@ def lookup_user_id(username, token, client_id):
         resp = requests.get(url, headers=headers, timeout=10)
         if resp.status_code == 200 and resp.json().get("data"):
             return resp.json()["data"][0]["id"]
-        print(f"[TWITCH][ERROR] User lookup failed for {username}: {resp.status_code} - {resp.text}")
+        print(
+            f"[TWITCH][ERROR] User lookup failed for {username}: {resp.status_code} - {resp.text}"
+        )
     except Exception as e:
         print(f"[TWITCH][ERROR] Exception looking up user {username}: {e}")
     return None
@@ -172,13 +165,22 @@ def ban_user(
             else:
                 print(f"[TWITCH] Timed out user {user_id} for {duration}s")
             return True
-        print(f"[TWITCH][ERROR] Failed to ban {user_id}: {resp.status_code} - {resp.text}")
+        print(
+            f"[TWITCH][ERROR] Failed to ban {user_id}: {resp.status_code} - {resp.text}"
+        )
     except Exception as e:
         print(f"[TWITCH][ERROR] Exception banning {user_id}: {e}")
     return False
 
 
-def warn_user(broadcaster_id, moderator_id, user_id, token, client_id, reason="Warning issued by moderation bot"):
+def warn_user(
+    broadcaster_id,
+    moderator_id,
+    user_id,
+    token,
+    client_id,
+    reason="Warning issued by moderation bot",
+):
     """Warn a user in chat using Twitch's moderation API."""
     url = "https://api.twitch.tv/helix/moderation/warnings"
     headers = {
@@ -196,7 +198,9 @@ def warn_user(broadcaster_id, moderator_id, user_id, token, client_id, reason="W
         if resp.status_code in (200, 201, 204):
             print(f"[TWITCH] Warned user {user_id}")
             return True
-        print(f"[TWITCH][ERROR] Failed to warn {user_id}: {resp.status_code} - {resp.text}")
+        print(
+            f"[TWITCH][ERROR] Failed to warn {user_id}: {resp.status_code} - {resp.text}"
+        )
     except Exception as e:
         print(f"[TWITCH][ERROR] Exception warning {user_id}: {e}")
     return False
@@ -220,7 +224,9 @@ def send_chat_message(broadcaster_id, sender_id, token, client_id, message):
         if resp.status_code in (200, 201, 204):
             print(f"[TWITCH] Sent chat message: {message}")
             return True
-        print(f"[TWITCH][ERROR] Failed to send chat message: {resp.status_code} - {resp.text}")
+        print(
+            f"[TWITCH][ERROR] Failed to send chat message: {resp.status_code} - {resp.text}"
+        )
     except Exception as e:
         print(f"[TWITCH][ERROR] Exception sending chat message: {e}")
     return False
@@ -267,13 +273,15 @@ def escalate_worker(stop_event, openai_client, assistant_id, token_manager, clie
                     moderator_id,
                     token_manager.get_token(),
                     client_id,
-                    f"@{username} {notes}"
+                    f"@{username} {notes}",
                 )
             elif action in {"timeout", "ban"} and username:
                 user_id = lookup_user_id(username, token_manager.get_token(), client_id)
                 if user_id:
                     if action == "timeout":
-                        duration = int(result.get("length", result.get("duration", 600)))
+                        duration = int(
+                            result.get("length", result.get("duration", 600))
+                        )
                         timeout_user(
                             broadcaster_id,
                             moderator_id,
@@ -288,7 +296,7 @@ def escalate_worker(stop_event, openai_client, assistant_id, token_manager, clie
                             moderator_id,
                             token_manager.get_token(),
                             client_id,
-                            f"@{username} {notes}"
+                            f"@{username} {notes}",
                         )
                     else:
                         ban_user(
@@ -304,7 +312,7 @@ def escalate_worker(stop_event, openai_client, assistant_id, token_manager, clie
                             moderator_id,
                             token_manager.get_token(),
                             client_id,
-                            f"@{username} {notes}"
+                            f"@{username} {notes}",
                         )
             save_user_threads(user_threads)
         except Exception as e:

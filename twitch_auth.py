@@ -22,51 +22,52 @@ TOKEN_FILE = "twitch_token.json"
 CERT_FILE = "localhost.pem"
 KEY_FILE = "localhost-key.pem"
 
+
 def get_selfsigned_cert(certfile: str = CERT_FILE, keyfile: str = KEY_FILE):
     """
     Generate a self-signed certificate for HTTPS localhost if not present.
     """
     if not (os.path.exists(certfile) and os.path.exists(keyfile)):
         print("[CERT] Generating new self-signed cert for localhost...")
-        key = rsa.generate_private_key(
-            public_exponent=65537,
-            key_size=2048
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        subject = issuer = x509.Name(
+            [
+                x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
+                x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, "California"),
+                x509.NameAttribute(NameOID.LOCALITY_NAME, "San Francisco"),
+                x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Localhost"),
+                x509.NameAttribute(NameOID.COMMON_NAME, "localhost"),
+            ]
         )
-        subject = issuer = x509.Name([
-            x509.NameAttribute(NameOID.COUNTRY_NAME, u"US"),
-            x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, u"California"),
-            x509.NameAttribute(NameOID.LOCALITY_NAME, u"San Francisco"),
-            x509.NameAttribute(NameOID.ORGANIZATION_NAME, u"Localhost"),
-            x509.NameAttribute(NameOID.COMMON_NAME, u"localhost"),
-        ])
-        cert = x509.CertificateBuilder().subject_name(
-            subject
-        ).issuer_name(
-            issuer
-        ).public_key(
-            key.public_key()
-        ).serial_number(
-            x509.random_serial_number()
-        ).not_valid_before(
-            datetime.utcnow()
-        ).not_valid_after(
-            datetime.utcnow() + timedelta(days=3650)
-        ).add_extension(
-            x509.SubjectAlternativeName([x509.DNSName(u"localhost")]),
-            critical=False,
-        ).sign(key, hashes.SHA256())
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(subject)
+            .issuer_name(issuer)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(datetime.utcnow())
+            .not_valid_after(datetime.utcnow() + timedelta(days=3650))
+            .add_extension(
+                x509.SubjectAlternativeName([x509.DNSName("localhost")]),
+                critical=False,
+            )
+            .sign(key, hashes.SHA256())
+        )
         # Write private key
         with open(keyfile, "wb") as f:
-            f.write(key.private_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PrivateFormat.TraditionalOpenSSL,
-                encryption_algorithm=serialization.NoEncryption(),
-            ))
+            f.write(
+                key.private_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PrivateFormat.TraditionalOpenSSL,
+                    encryption_algorithm=serialization.NoEncryption(),
+                )
+            )
         # Write cert
         with open(certfile, "wb") as f:
             f.write(cert.public_bytes(serialization.Encoding.PEM))
         print(f"[CERT] Created self-signed cert: {certfile}, key: {keyfile}")
     return certfile, keyfile
+
 
 def load_twitch_token():
     if os.path.exists(TOKEN_FILE):
@@ -74,9 +75,11 @@ def load_twitch_token():
             return json.load(f)
     return {}
 
+
 def save_twitch_token(data):
     with open(TOKEN_FILE, "w") as f:
         json.dump(data, f)
+
 
 class TwitchOAuthTokenManager:
     AUTH_URL = "https://id.twitch.tv/oauth2/authorize"
@@ -106,9 +109,11 @@ class TwitchOAuthTokenManager:
         """
         with self._lock:
             vprint(2, f"[OAUTH DEBUG] Loaded token: {self.token_data}")
-            if (self.token_data
+            if (
+                self.token_data
                 and self.token_data.get("access_token")
-                and self.token_data.get("expires_at", 0) > time.time() + 120):
+                and self.token_data.get("expires_at", 0) > time.time() + 120
+            ):
                 vprint(1, "[OAUTH] Using cached token.")
                 return self.token_data["access_token"]
 
@@ -141,13 +146,16 @@ class TwitchOAuthTokenManager:
             "scope": self.SCOPE,
         }
         url = f"{self.AUTH_URL}?{urllib.parse.urlencode(params)}"
-        print(f"\n[TWITCH OAUTH] Please open this link to authorize (if browser doesn't open automatically):\n  {url}\n")
+        print(
+            f"\n[TWITCH OAUTH] Please open this link to authorize (if browser doesn't open automatically):\n  {url}\n"
+        )
         webbrowser.open(url)
         code_holder = {}
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
                 from urllib.parse import urlparse, parse_qs
+
                 parsed = urlparse(self.path)
                 qs = parse_qs(parsed.query)
                 if parsed.path == "/callback" and "code" in qs:
@@ -155,12 +163,16 @@ class TwitchOAuthTokenManager:
                     self.send_response(200)
                     self.send_header("Content-type", "text/html")
                     self.end_headers()
-                    self.wfile.write(b"<h1>Authorization successful!</h1><p>You may close this window.</p>")
+                    self.wfile.write(
+                        b"<h1>Authorization successful!</h1><p>You may close this window.</p>"
+                    )
                 else:
                     self.send_response(400)
                     self.end_headers()
                     self.wfile.write(b"Authorization failed or was cancelled.")
-            def log_message(self, *a, **k): pass
+
+            def log_message(self, *a, **k):
+                pass
 
         class ReusableTCPServer(socketserver.TCPServer):
             allow_reuse_address = True
@@ -173,7 +185,10 @@ class TwitchOAuthTokenManager:
                 t = threading.Thread(target=httpd.serve_forever)
                 t.daemon = True
                 t.start()
-                vprint(1, "[OAUTH] Waiting for browser callback on https://localhost:8443/callback ...")
+                vprint(
+                    1,
+                    "[OAUTH] Waiting for browser callback on https://localhost:8443/callback ...",
+                )
                 for _ in range(300):
                     if "code" in code_holder:
                         break
@@ -182,9 +197,12 @@ class TwitchOAuthTokenManager:
         except Exception as e:
             vprint(1, f"[OAUTH] Local callback server error: {e}")
         if "code" not in code_holder:
-            vprint(1, "[OAUTH] Callback not received.\n"
-                  "If the browser opened, copy the full URL you were redirected to"
-                  " and paste it below.")
+            vprint(
+                1,
+                "[OAUTH] Callback not received.\n"
+                "If the browser opened, copy the full URL you were redirected to"
+                " and paste it below.",
+            )
             manual_url = input("Paste redirect URL (or press Enter to abort): ").strip()
             if manual_url:
                 try:
@@ -198,6 +216,7 @@ class TwitchOAuthTokenManager:
             raise RuntimeError("OAuth failed: Did not receive code.")
         vprint(1, "[OAUTH] Received code. Requesting token...")
         import requests
+
         data = {
             "client_id": self.client_id,
             "client_secret": self.client_secret,
@@ -215,7 +234,7 @@ class TwitchOAuthTokenManager:
         self.token_data = {
             "access_token": token_json["access_token"],
             "refresh_token": token_json.get("refresh_token"),
-            "expires_at": time.time() + token_json.get("expires_in", 0)
+            "expires_at": time.time() + token_json.get("expires_in", 0),
         }
         save_twitch_token(self.token_data)
         vprint(1, "[OAUTH] Token obtained and saved.")
@@ -226,6 +245,7 @@ class TwitchOAuthTokenManager:
         """
         vprint(1, "[OAUTH] Refreshing token...")
         import requests
+
         data = {
             "client_id": self.client_id,
             "client_secret": self.client_secret,
@@ -239,10 +259,14 @@ class TwitchOAuthTokenManager:
             print(f"[OAUTH ERROR] Refresh request failed: {resp.text}")
             raise
         token_json = resp.json()
-        self.token_data.update({
-            "access_token": token_json["access_token"],
-            "refresh_token": token_json.get("refresh_token", self.token_data.get("refresh_token")),
-            "expires_at": time.time() + token_json.get("expires_in", 0)
-        })
+        self.token_data.update(
+            {
+                "access_token": token_json["access_token"],
+                "refresh_token": token_json.get(
+                    "refresh_token", self.token_data.get("refresh_token")
+                ),
+                "expires_at": time.time() + token_json.get("expires_in", 0),
+            }
+        )
         save_twitch_token(self.token_data)
         vprint(1, "[OAUTH] Token refreshed and saved.")
