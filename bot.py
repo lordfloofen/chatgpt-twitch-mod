@@ -12,7 +12,9 @@ logging.basicConfig(
 api_logger = logging.getLogger("api_logger")
 api_logger.setLevel(logging.INFO)
 api_handler = logging.FileHandler("api_log.txt")
-api_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s'))
+api_handler.setFormatter(
+    logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+)
 api_logger.addHandler(api_handler)
 
 for log_name in ["openai", "httpx", "httpcore"]:
@@ -26,18 +28,21 @@ for log_name in ["openai", "httpx", "httpcore"]:
     # Add the api_log.txt handler
     lib_logger.addHandler(api_handler)
 
-import yaml
 import threading
 import sys
-import os
-import json
 
 from twitch_auth import TwitchOAuthTokenManager
 from irc_client import run_irc_forever
-from moderation import message_queue, batch_worker, run_worker, loss_report, configure_limits
+from moderation import (
+    message_queue,
+    batch_worker,
+    run_worker,
+    loss_report,
+    configure_limits,
+)
 from escalate import escalate_worker
 from token_utils import TokenBucket
-from utils import set_verbosity
+from utils import set_verbosity, load_config, get_thread_id
 
 try:
     from openai import OpenAI
@@ -45,42 +50,15 @@ except ImportError:
     print("Please install openai: pip install openai")
     sys.exit(1)
 
-def load_config():
-    if not os.path.exists("config.yaml"):
-        print("Missing config.yaml! Exiting.")
-        sys.exit(1)
-    with open("config.yaml", "r") as f:
-        return yaml.safe_load(f)
-
-def get_thread_id(client_ai, channel, thread_map_file="thread_map.json"):
-    """
-    Loads or creates an OpenAI thread for this channel (case-insensitive) and prints status.
-    Returns the thread ID.
-    """
-    channel_lower = channel.lower()  # normalize key to lower-case
-
-    if os.path.exists(thread_map_file):
-        with open(thread_map_file, "r") as f:
-            channel_threads = json.load(f)
-    else:
-        channel_threads = {}
-
-    if channel_lower in channel_threads:
-        thread_id = channel_threads[channel_lower]
-        print(f"[THREAD] Using existing thread for {channel_lower}: {thread_id}")
-    else:
-        thread = client_ai.beta.threads.create()
-        thread_id = thread.id
-        channel_threads[channel_lower] = thread_id
-        with open(thread_map_file, "w") as f:
-            json.dump(channel_threads, f)
-        print(f"[THREAD] Created new thread for {channel_lower}: {thread_id}")
-    return thread_id
 
 def main():
     parser = argparse.ArgumentParser(description="ChatGPT Twitch moderation bot")
-    parser.add_argument("-v", action="count", default=0,
-                        help="Increase verbosity (-vv for debug messages)")
+    parser.add_argument(
+        "-v",
+        action="count",
+        default=0,
+        help="Increase verbosity (-vv for debug messages)",
+    )
     args = parser.parse_args()
     set_verbosity(args.v)
 
@@ -100,8 +78,7 @@ def main():
 
     # --- Token manager ---
     token_manager = TwitchOAuthTokenManager(
-        client_id=twitch["client_id"],
-        client_secret=twitch["client_secret"]
+        client_id=twitch["client_id"], client_secret=twitch["client_secret"]
     )
 
     # --- OpenAI Client ---
@@ -126,9 +103,9 @@ def main():
             channel,
             twitch["client_id"],
             token_manager,  # pass manager so worker can refresh token
-            batch_interval
+            batch_interval,
         ),
-        daemon=True
+        daemon=True,
     )
     batch_thread.start()
 
@@ -143,9 +120,9 @@ def main():
             twitch["client_id"],
             token_manager,
             token_bucket,
-            moderation_timeout
+            moderation_timeout,
         ),
-        daemon=True
+        daemon=True,
     )
     run_thread.start()
 
@@ -175,6 +152,7 @@ def main():
         if escalate_assistant_id:
             escalate_thread.join(timeout=10)
         loss_report()
+
 
 if __name__ == "__main__":
     main()
