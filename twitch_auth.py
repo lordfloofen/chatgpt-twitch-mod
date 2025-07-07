@@ -82,7 +82,15 @@ class TwitchOAuthTokenManager:
     AUTH_URL = "https://id.twitch.tv/oauth2/authorize"
     TOKEN_URL = "https://id.twitch.tv/oauth2/token"
     REDIRECT_URI = "https://localhost:8443/callback"
-    SCOPE = "chat:read user:read:chat moderator:manage:chat_messages"
+    # Required scopes to run the moderation bot. These allow reading chat,
+    # sending messages as the authenticated user, and managing bans/timeouts.
+    SCOPE = (
+        "chat:read "
+        "user:read:chat "
+        "user:write:chat "
+        "moderator:manage:chat_messages "
+        "moderator:manage:banned_users"
+    )
 
     def __init__(self, client_id: str, client_secret: str):
         self.client_id = client_id
