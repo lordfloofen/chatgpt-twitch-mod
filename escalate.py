@@ -108,7 +108,46 @@ def lookup_user_id(username, token, client_id):
     return None
 
 
-def timeout_user(broadcaster_id, moderator_id, user_id, token, client_id, duration, reason="Timeout by moderation bot"):
+def timeout_user(
+    broadcaster_id,
+    moderator_id,
+    user_id,
+    token,
+    client_id,
+    duration,
+    reason="Timeout by moderation bot",
+):
+    """Timeout a user for ``duration`` seconds using the Twitch Moderation API."""
+    return ban_user(
+        broadcaster_id,
+        moderator_id,
+        user_id,
+        token,
+        client_id,
+        reason=reason,
+        duration=duration,
+    )
+
+
+def ban_user(
+    broadcaster_id,
+    moderator_id,
+    user_id,
+    token,
+    client_id,
+    *,
+    reason="Banned by moderation bot",
+    duration=None,
+):
+    """Ban a user or put them in a timeout using Twitch's moderation API.
+
+    This implements the `Ban User` endpoint described in the Twitch API docs:
+    https://dev.twitch.tv/docs/api/reference/#ban-user
+
+    If ``duration`` is provided, the user is timed out for that number of
+    seconds. Otherwise, the user is banned indefinitely.
+    """
+
     url = "https://api.twitch.tv/helix/moderation/bans"
     headers = {
         "Client-ID": client_id,
@@ -119,20 +158,29 @@ def timeout_user(broadcaster_id, moderator_id, user_id, token, client_id, durati
         "broadcaster_id": broadcaster_id,
         "moderator_id": moderator_id,
     }
-    data = {"data": {"user_id": user_id, "duration": int(duration), "reason": reason}}
+    data = {"data": {"user_id": user_id}}
+    if duration is not None:
+        data["data"]["duration"] = int(duration)
+    if reason:
+        data["data"]["reason"] = reason
+
     try:
         resp = requests.post(url, headers=headers, params=params, json=data, timeout=10)
         if resp.status_code in (200, 201, 204):
-            print(f"[TWITCH] Timed out user {user_id} for {duration}s")
+            if duration is None:
+                print(f"[TWITCH] Banned user {user_id}")
+            else:
+                print(f"[TWITCH] Timed out user {user_id} for {duration}s")
             return True
-        print(f"[TWITCH][ERROR] Failed to timeout {user_id}: {resp.status_code} - {resp.text}")
+        print(f"[TWITCH][ERROR] Failed to ban {user_id}: {resp.status_code} - {resp.text}")
     except Exception as e:
-        print(f"[TWITCH][ERROR] Exception timing out {user_id}: {e}")
+        print(f"[TWITCH][ERROR] Exception banning {user_id}: {e}")
     return False
 
 
-def ban_user(broadcaster_id, moderator_id, user_id, token, client_id, reason="Banned by moderation bot"):
-    url = "https://api.twitch.tv/helix/moderation/bans"
+def warn_user(broadcaster_id, moderator_id, user_id, token, client_id, reason="Warning issued by moderation bot"):
+    """Warn a user in chat using Twitch's moderation API."""
+    url = "https://api.twitch.tv/helix/moderation/warnings"
     headers = {
         "Client-ID": client_id,
         "Authorization": f"Bearer {token}",
@@ -146,11 +194,35 @@ def ban_user(broadcaster_id, moderator_id, user_id, token, client_id, reason="Ba
     try:
         resp = requests.post(url, headers=headers, params=params, json=data, timeout=10)
         if resp.status_code in (200, 201, 204):
-            print(f"[TWITCH] Banned user {user_id}")
+            print(f"[TWITCH] Warned user {user_id}")
             return True
-        print(f"[TWITCH][ERROR] Failed to ban {user_id}: {resp.status_code} - {resp.text}")
+        print(f"[TWITCH][ERROR] Failed to warn {user_id}: {resp.status_code} - {resp.text}")
     except Exception as e:
-        print(f"[TWITCH][ERROR] Exception banning {user_id}: {e}")
+        print(f"[TWITCH][ERROR] Exception warning {user_id}: {e}")
+    return False
+
+
+def send_chat_message(broadcaster_id, moderator_id, token, client_id, message):
+    """Send a chat message as the moderator."""
+    url = "https://api.twitch.tv/helix/chat/messages"
+    headers = {
+        "Client-ID": client_id,
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    params = {
+        "broadcaster_id": broadcaster_id,
+        "moderator_id": moderator_id,
+    }
+    data = {"message": message}
+    try:
+        resp = requests.post(url, headers=headers, params=params, json=data, timeout=10)
+        if resp.status_code in (200, 201, 204):
+            print(f"[TWITCH] Sent chat message: {message}")
+            return True
+        print(f"[TWITCH][ERROR] Failed to send chat message: {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"[TWITCH][ERROR] Exception sending chat message: {e}")
     return False
 
 
@@ -178,11 +250,30 @@ def escalate_worker(stop_event, openai_client, assistant_id, token_manager, clie
             print(f"[ESCALATION] {result_text or ''}")
             result = parse_escalation_result(result_text)
             action = (result.get("action") or "").lower()
-            if action in {"timeout", "ban"} and username:
+            notes = result.get("notes", "")
+            if action == "warn" and username:
+                user_id = lookup_user_id(username, token_manager.get_token(), client_id)
+                if user_id:
+                    warn_user(
+                        broadcaster_id,
+                        moderator_id,
+                        user_id,
+                        token_manager.get_token(),
+                        client_id,
+                        notes,
+                    )
+                send_chat_message(
+                    broadcaster_id,
+                    moderator_id,
+                    token_manager.get_token(),
+                    client_id,
+                    f"@{username} {notes}"
+                )
+            elif action in {"timeout", "ban"} and username:
                 user_id = lookup_user_id(username, token_manager.get_token(), client_id)
                 if user_id:
                     if action == "timeout":
-                        duration = int(result.get("duration", 600))
+                        duration = int(result.get("length", result.get("duration", 600)))
                         timeout_user(
                             broadcaster_id,
                             moderator_id,
@@ -190,7 +281,14 @@ def escalate_worker(stop_event, openai_client, assistant_id, token_manager, clie
                             token_manager.get_token(),
                             client_id,
                             duration,
-                            result.get("reason", ""),
+                            notes,
+                        )
+                        send_chat_message(
+                            broadcaster_id,
+                            moderator_id,
+                            token_manager.get_token(),
+                            client_id,
+                            f"@{username} {notes}"
                         )
                     else:
                         ban_user(
@@ -199,7 +297,14 @@ def escalate_worker(stop_event, openai_client, assistant_id, token_manager, clie
                             user_id,
                             token_manager.get_token(),
                             client_id,
-                            result.get("reason", ""),
+                            reason=notes,
+                        )
+                        send_chat_message(
+                            broadcaster_id,
+                            moderator_id,
+                            token_manager.get_token(),
+                            client_id,
+                            f"@{username} {notes}"
                         )
             save_user_threads(user_threads)
         except Exception as e:
