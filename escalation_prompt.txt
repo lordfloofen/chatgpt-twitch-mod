@@ -21,10 +21,15 @@ Return moderation decisions in this format:
 
 {
   "username": "<user>",
-  "action": "warn | timeout" | "ban",
-  "length": <seconds> // Required if action is "timeout"
-  "notes": "<why the action is being issued"
+  "action": "warn | timeout | ban",
+  "length": <seconds>,
+  "notes": "<why the action is being issued>"
 }
+
+The "length" field is required only for a "timeout" action and specifies the
+number of seconds to time the user out. "warn" and "ban" do not include this
+field. When you warn, timeout, or ban a user, also send the text from "notes" as
+the chat message accompanying that action.
 
     If no action is required (even for a technical violation), return nothing for that user.
 
