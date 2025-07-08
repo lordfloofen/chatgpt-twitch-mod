@@ -414,55 +414,101 @@ def run_worker(
     client_id,
     token_manager,
     token_bucket: TokenBucket,
+    batch,
+    channel_info,
     moderation_timeout=60,
 ):
-    """Process batches from run_queue sequentially without blocking batch_worker."""
+    """Process a single batch from ``run_queue`` and exit."""
+    if stop_event.is_set():
+        return
     try:
-        while not stop_event.is_set() or not run_queue.empty():
+        ok = run_with_timeout(
+            moderate_batch,
+            args=(
+                openai_client,
+                assistant_id,
+                escalate_assistant_id,
+                thread_id,
+                batch,
+                channel_info,
+                token_manager.get_token(),
+                client_id,
+                token_bucket,
+            ),
+            timeout=moderation_timeout,
+        )
+    except KeyboardInterrupt:
+        stop_event.set()
+        return
+    except RuntimeError as e:
+        # Happens if interpreter is shutting down while we're still processing
+        print(f"[ERROR][MODERATION][WORKER] {e}")
+        stop_event.set()
+        return
+
+    if not ok:
+        print(
+            f"[ERROR][BATCH] Moderation failed or timed out or API did not respond. Marking {len(batch)} messages as NOT MODERATED and moving on."
+        )
+        debug_ids = [msg["id"] for msg in batch]
+        not_moderated.update(debug_ids)
+        print(
+            f"[DEBUG][NOT-MODERATED] Message IDs not moderated (sample): {debug_ids[:10]}{' ...' if len(debug_ids) > 10 else ''}"
+        )
+
+
+def run_manager(
+    stop_event,
+    openai_client,
+    assistant_id,
+    escalate_assistant_id,
+    thread_id,
+    client_id,
+    token_manager,
+    token_bucket: TokenBucket,
+    batch_interval=2,
+    moderation_timeout=60,
+):
+    """Spawn ``run_worker`` threads every ``batch_interval`` seconds."""
+    worker_threads: list[threading.Thread] = []
+    last_start = 0.0
+    while (
+        not stop_event.is_set()
+        or not run_queue.empty()
+        or any(t.is_alive() for t in worker_threads)
+    ):
+        # Clean up finished threads
+        worker_threads = [t for t in worker_threads if t.is_alive()]
+        now = time.time()
+        if now - last_start >= batch_interval and not run_queue.empty():
             try:
-                batch, channel_info = run_queue.get(timeout=1)
+                batch, channel_info = run_queue.get_nowait()
             except queue.Empty:
-                continue
-
-            if stop_event.is_set():
-                break
-
-            try:
-                ok = run_with_timeout(
-                    moderate_batch,
+                pass
+            else:
+                t = threading.Thread(
+                    target=run_worker,
                     args=(
+                        stop_event,
                         openai_client,
                         assistant_id,
                         escalate_assistant_id,
                         thread_id,
+                        client_id,
+                        token_manager,
+                        token_bucket,
                         batch,
                         channel_info,
-                        token_manager.get_token(),
-                        client_id,
-                        token_bucket,
+                        moderation_timeout,
                     ),
-                    timeout=moderation_timeout,
                 )
-            except KeyboardInterrupt:
-                stop_event.set()
-                break
-            except RuntimeError as e:
-                # Happens if interpreter is shutting down while we're still processing
-                print(f"[ERROR][MODERATION][WORKER] {e}")
-                stop_event.set()
-                break
+                t.start()
+                worker_threads.append(t)
+                last_start = now
+        time.sleep(0.05)
 
-            if not ok:
-                print(
-                    f"[ERROR][BATCH] Moderation failed or timed out or API did not respond. Marking {len(batch)} messages as NOT MODERATED and moving on."
-                )
-                debug_ids = [msg["id"] for msg in batch]
-                not_moderated.update(debug_ids)
-                print(
-                    f"[DEBUG][NOT-MODERATED] Message IDs not moderated (sample): {debug_ids[:10]}{' ...' if len(debug_ids) > 10 else ''}"
-                )
-    except KeyboardInterrupt:
-        stop_event.set()
+    for t in worker_threads:
+        t.join()
 
 
 def loss_report():
