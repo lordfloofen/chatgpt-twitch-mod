@@ -36,7 +36,7 @@ from irc_client import run_irc_forever
 from moderation import (
     message_queue,
     batch_worker,
-    run_worker,
+    run_manager,
     loss_report,
     configure_limits,
 )
@@ -109,7 +109,7 @@ def main():
     batch_thread.start()
 
     run_thread = threading.Thread(
-        target=run_worker,
+        target=run_manager,
         args=(
             stop_event,
             client_ai,
@@ -119,6 +119,7 @@ def main():
             twitch["client_id"],
             token_manager,
             token_bucket,
+            batch_interval,
             moderation_timeout,
         ),
     )
