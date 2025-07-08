@@ -105,7 +105,6 @@ def main():
             token_manager,  # pass manager so worker can refresh token
             batch_interval,
         ),
-        daemon=True,
     )
     batch_thread.start()
 
@@ -122,7 +121,6 @@ def main():
             token_bucket,
             moderation_timeout,
         ),
-        daemon=True,
     )
     run_thread.start()
 
@@ -136,7 +134,6 @@ def main():
                 token_manager,
                 twitch["client_id"],
             ),
-            daemon=True,
         )
         escalate_thread.start()
 
@@ -147,10 +144,10 @@ def main():
         print("\n[BOT] Exiting on user interrupt...")
     finally:
         stop_event.set()
-        batch_thread.join(timeout=10)
-        run_thread.join(timeout=10)
+        batch_thread.join()
+        run_thread.join()
         if escalate_assistant_id:
-            escalate_thread.join(timeout=10)
+            escalate_thread.join()
         loss_report()
 
 
