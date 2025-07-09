@@ -41,6 +41,7 @@ tokens_per_minute: 20000
 moderation_timeout: 60
 max_openai_content_size: 256000
 max_rate_limit_retries: 3
+use_stream: true
 twitch:
   server: "irc.chat.twitch.tv"
   port: 6697
@@ -57,6 +58,12 @@ Start the bot:
 python bot.py [-v|-vv]
 ```
 Use `-v` to print informational messages and `-vv` to include OAuth debug output.
+
+### Streaming mode
+
+Set `use_stream: true` in `config.yaml` to stream run events from OpenAI instead of polling.
+Streaming can reduce wait time for large runs and provides immediate feedback as
+messages are processed.
 
 On first run, the bot will:
 1. Generate required SSL certificates for OAuth
@@ -89,6 +96,7 @@ See `config.yaml` for all configuration options. Key settings:
 - `escalation_assistant_id`: Assistant used to analyze repeated offenses
 - `max_openai_content_size`: Maximum JSON payload size sent to OpenAI
 - `max_rate_limit_retries`: How many times to retry on rate limits
+- `use_stream`: Enable streaming of run events instead of polling
 - Twitch credentials and connection settings
 
 ## Contributing
