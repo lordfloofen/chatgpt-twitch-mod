@@ -105,6 +105,32 @@ def wait_for_runs_to_complete(openai_client, thread_id, poll_interval=5, timeout
             return
 
 
+def stream_run(openai_client, thread_id, assistant_id):
+    """Start a run with streaming enabled and read events until completion."""
+    try:
+        events = openai_client.beta.threads.runs.create(
+            thread_id=thread_id, assistant_id=assistant_id, stream=True
+        )
+    except Exception as e:
+        print(f"[ERROR][RUN][STREAM] Exception starting run: {e}")
+        return None
+
+    last_status = None
+    try:
+        for event in events:
+            last_status = getattr(event, "data", last_status)
+            if getattr(event, "event", "") in {
+                "thread.run.completed",
+                "thread.run.failed",
+                "thread.run.cancelled",
+                "thread.run.expired",
+            }:
+                break
+    except Exception as e:
+        print(f"[ERROR][RUN][STREAM] Exception reading events: {e}")
+    return last_status
+
+
 from token_utils import count_tokens, TokenBucket
 
 
@@ -118,6 +144,7 @@ def moderate_batch(
     token=None,
     client_id=None,
     token_bucket: TokenBucket = None,
+    use_stream: bool = False,
 ):
     try:
         context = (
@@ -158,6 +185,7 @@ def moderate_batch(
                 token,
                 client_id,
                 token_bucket,
+                use_stream,
             )
             right = moderate_batch(
                 openai_client,
@@ -169,6 +197,7 @@ def moderate_batch(
                 token,
                 client_id,
                 token_bucket,
+                use_stream,
             )
             return left and right
 
@@ -198,10 +227,14 @@ def moderate_batch(
                 return False
 
             try:
-                run = openai_client.beta.threads.runs.create(
-                    thread_id=thread_id,
-                    assistant_id=assistant_id,
-                )
+                if use_stream:
+                    status = stream_run(openai_client, thread_id, assistant_id)
+                    run = None
+                else:
+                    run = openai_client.beta.threads.runs.create(
+                        thread_id=thread_id,
+                        assistant_id=assistant_id,
+                    )
             except Exception as e:
                 msg = str(e)
                 if "rate limit" in msg.lower():
@@ -213,10 +246,10 @@ def moderate_batch(
                     continue
                 print(f"[ERROR][MODERATION] Exception creating run: {e}")
                 return False
-
-            status = wait_for_run_completion(
-                openai_client, thread_id, run, poll_interval=5
-            )
+            if run is not None:
+                status = wait_for_run_completion(
+                    openai_client, thread_id, run, poll_interval=5
+                )
             if status and status.status == "completed":
                 break
             if status and status.status == "failed":
@@ -415,6 +448,7 @@ def run_worker(
     token_manager,
     token_bucket: TokenBucket,
     moderation_timeout=60,
+    use_stream: bool = False,
 ):
     """Process batches from run_queue sequentially without blocking batch_worker."""
     try:
@@ -440,6 +474,7 @@ def run_worker(
                         token_manager.get_token(),
                         client_id,
                         token_bucket,
+                        use_stream,
                     ),
                     timeout=moderation_timeout,
                 )

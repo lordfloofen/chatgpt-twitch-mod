@@ -74,6 +74,7 @@ def main():
     moderation_timeout = config.get("moderation_timeout", 60)
     max_openai_content_size = config.get("max_openai_content_size", 256000)
     max_rate_limit_retries = config.get("max_rate_limit_retries", 3)
+    use_stream = config.get("use_stream", False)
     channel = twitch["channel"]
 
     # --- Token manager ---
@@ -120,6 +121,7 @@ def main():
             token_manager,
             token_bucket,
             moderation_timeout,
+            use_stream,
         ),
     )
     run_thread.start()
