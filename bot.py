@@ -40,9 +40,8 @@ from moderation import (
     loss_report,
     configure_limits,
 )
-from escalate import escalate_worker
 from token_utils import TokenBucket
-from utils import set_verbosity, load_config, get_thread_id
+from utils import set_verbosity, load_config
 
 try:
     from openai import OpenAI
@@ -68,7 +67,6 @@ def main():
     twitch = config["twitch"]
     api_key = config["api_key"]
     assistant_id = config["assistant_id"]
-    escalate_assistant_id = config.get("escalation_assistant_id")
     batch_interval = config.get("batch_interval", 2)
     tokens_per_minute = config.get("tokens_per_minute", 20000)
     moderation_timeout = config.get("moderation_timeout", 60)
@@ -89,9 +87,6 @@ def main():
 
     configure_limits(max_openai_content_size, max_rate_limit_retries)
 
-    # --- Persistent thread ID ---
-    thread_id = get_thread_id(client_ai, channel)
-
     # --- Moderation batch and run workers (threads) ---
     stop_event = threading.Event()
     batch_thread = threading.Thread(
@@ -100,7 +95,6 @@ def main():
             stop_event,
             client_ai,
             assistant_id,
-            thread_id,
             channel,
             twitch["client_id"],
             token_manager,  # pass manager so worker can refresh token
@@ -115,8 +109,6 @@ def main():
             stop_event,
             client_ai,
             assistant_id,
-            escalate_assistant_id,
-            thread_id,
             twitch["client_id"],
             token_manager,
             token_bucket,
@@ -125,19 +117,6 @@ def main():
         ),
     )
     run_thread.start()
-
-    if escalate_assistant_id:
-        escalate_thread = threading.Thread(
-            target=escalate_worker,
-            args=(
-                stop_event,
-                client_ai,
-                escalate_assistant_id,
-                token_manager,
-                twitch["client_id"],
-            ),
-        )
-        escalate_thread.start()
 
     try:
         print("[BOT] Starting IRC loop...")
@@ -148,8 +127,6 @@ def main():
         stop_event.set()
         batch_thread.join()
         run_thread.join()
-        if escalate_assistant_id:
-            escalate_thread.join()
         loss_report()
 
 
