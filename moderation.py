@@ -1,15 +1,14 @@
-import threading
 import time
 import json
 import logging
 import queue
-from datetime import datetime
 import requests
 import re
 import math
-from utils import vprint, wait_for_run_completion, run_with_timeout
+import threading
+from utils import vprint, run_with_timeout
 
-from escalate import escalate_queue
+from token_utils import count_tokens, TokenBucket
 
 # --- Message queue used for incoming messages from IRC ---
 message_queue = queue.Queue()
@@ -21,8 +20,6 @@ not_moderated = set()
 
 MAX_OPENAI_CONTENT_SIZE = 256000
 MAX_RATE_LIMIT_RETRIES = 3
-
-# Per-user escalation threads handled by escalate_worker
 
 
 def configure_limits(
@@ -82,63 +79,91 @@ def delete_chat_message(broadcaster_id, moderator_id, message_id, token, client_
         return False
 
 
-def wait_for_runs_to_complete(openai_client, thread_id, poll_interval=5, timeout=120):
-    start = time.time()
-    while True:
-        try:
-            runs = openai_client.beta.threads.runs.list(thread_id=thread_id).data
-            active = [
-                r
-                for r in runs
-                if r.status not in ("completed", "failed", "cancelled", "expired")
-            ]
-            if not active:
-                return
-            if time.time() - start > timeout:
-                print(
-                    f"[ERROR][RUN] Timed out waiting for runs to complete on thread {thread_id}"
-                )
-                return
-            time.sleep(poll_interval)
-        except Exception as e:
-            print(f"[ERROR][RUN] Exception while waiting for runs: {e}")
-            return
-
-
-def stream_run(openai_client, thread_id, assistant_id):
-    """Start a run with streaming enabled and read events until completion."""
-    try:
-        events = openai_client.beta.threads.runs.create(
-            thread_id=thread_id, assistant_id=assistant_id, stream=True
-        )
-    except Exception as e:
-        print(f"[ERROR][RUN][STREAM] Exception starting run: {e}")
+def _extract_text_content(content):
+    """Extract text value from a response content block."""
+    if content is None:
         return None
+    text = getattr(content, "text", None)
+    if isinstance(text, str):
+        return text
+    if text is not None and hasattr(text, "value"):
+        return getattr(text, "value", None)
+    value = getattr(content, "value", None)
+    if isinstance(value, str):
+        return value
+    return None
 
-    last_status = None
+
+def _extract_response_text(response, streamed_chunks=None):
+    """Collect text output from a Response object."""
+    texts = []
     try:
-        for event in events:
-            last_status = getattr(event, "data", last_status)
-            if getattr(event, "event", "") in {
-                "thread.run.completed",
-                "thread.run.failed",
-                "thread.run.cancelled",
-                "thread.run.expired",
-            }:
-                break
+        outputs = getattr(response, "output", None) or getattr(
+            response, "outputs", None
+        )
+        for output in outputs or []:
+            message = getattr(output, "message", None)
+            contents = getattr(message, "content", None) or []
+            for content in contents:
+                value = _extract_text_content(content)
+                if value:
+                    texts.append(value)
     except Exception as e:
-        print(f"[ERROR][RUN][STREAM] Exception reading events: {e}")
-    return last_status
+        print(f"[ERROR][RESPONSE][PARSE] {e}")
+    if not texts:
+        try:
+            output_text = getattr(response, "output_text", None)
+            if output_text:
+                if isinstance(output_text, list):
+                    texts.extend(str(chunk) for chunk in output_text)
+                else:
+                    texts.append(str(output_text))
+        except Exception:
+            pass
+    if texts:
+        return "".join(texts).strip()
+    if streamed_chunks:
+        return "".join(streamed_chunks).strip()
+    return ""
 
 
-from token_utils import count_tokens, TokenBucket
+def _request_assistant_response(
+    openai_client, assistant_id, payload_text: str, use_stream: bool
+):
+    """Send a single-turn request to the assistant without threads."""
+    streamed_chunks = []
+    if use_stream:
+        try:
+            with openai_client.responses.stream(
+                assistant_id=assistant_id,
+                input=payload_text,
+            ) as stream:
+                for event in stream:
+                    delta = getattr(event, "delta", None)
+                    if delta:
+                        text = _extract_text_content(delta)
+                        if text:
+                            streamed_chunks.append(text)
+                    elif hasattr(event, "data"):
+                        delta = getattr(event.data, "delta", None)
+                        text = _extract_text_content(delta)
+                        if text:
+                            streamed_chunks.append(text)
+                final_response = stream.get_final_response()
+            return _extract_response_text(final_response, streamed_chunks)
+        except Exception as e:
+            print(f"[ERROR][MODERATION][STREAM] {e}")
+            return None
+    response = openai_client.responses.create(
+        assistant_id=assistant_id,
+        input=payload_text,
+    )
+    return _extract_response_text(response)
 
 
 def moderate_batch(
     openai_client,
     assistant_id,
-    escalate_assistant_id,
-    thread_id,
     batch,
     channel_info=None,
     token=None,
@@ -178,8 +203,6 @@ def moderate_batch(
             left = moderate_batch(
                 openai_client,
                 assistant_id,
-                escalate_assistant_id,
-                thread_id,
                 batch[:mid],
                 channel_info,
                 token,
@@ -190,8 +213,6 @@ def moderate_batch(
             right = moderate_batch(
                 openai_client,
                 assistant_id,
-                escalate_assistant_id,
-                thread_id,
                 batch[mid:],
                 channel_info,
                 token,
@@ -201,83 +222,32 @@ def moderate_batch(
             )
             return left and right
 
+        latest = None
         for attempt in range(MAX_RATE_LIMIT_RETRIES + 1):
-            wait_for_runs_to_complete(openai_client, thread_id, poll_interval=5)
-
             if token_bucket is not None:
                 tokens_needed = count_tokens(batch_json)
                 token_bucket.consume(tokens_needed)
-
             try:
-                openai_client.beta.threads.messages.create(
-                    thread_id=thread_id,
-                    role="user",
-                    content=batch_json,
+                latest = _request_assistant_response(
+                    openai_client, assistant_id, batch_json, use_stream
                 )
-            except Exception as e:
-                msg = str(e)
-                if "rate limit" in msg.lower():
-                    wait = _parse_retry_after_seconds(msg)
-                    print(
-                        f"[RATE LIMIT] Messages.create hit rate limit, retrying in {wait}s..."
-                    )
-                    time.sleep(wait)
-                    continue
-                print(f"[ERROR][MODERATION] Exception adding messages: {e}")
-                return False
-
-            try:
-                if use_stream:
-                    status = stream_run(openai_client, thread_id, assistant_id)
-                    run = None
-                else:
-                    run = openai_client.beta.threads.runs.create(
-                        thread_id=thread_id,
-                        assistant_id=assistant_id,
-                    )
-            except Exception as e:
-                msg = str(e)
-                if "rate limit" in msg.lower():
-                    wait = _parse_retry_after_seconds(msg)
-                    print(
-                        f"[RATE LIMIT] Runs.create hit rate limit, retrying in {wait}s..."
-                    )
-                    time.sleep(wait)
-                    continue
-                print(f"[ERROR][MODERATION] Exception creating run: {e}")
-                return False
-            if run is not None:
-                status = wait_for_run_completion(
-                    openai_client, thread_id, run, poll_interval=5
-                )
-            if status and status.status == "completed":
+                if latest is None:
+                    raise RuntimeError("Assistant response was empty.")
                 break
-            if status and status.status == "failed":
-                last_error = getattr(status, "last_error", None)
-                if (
-                    last_error
-                    and getattr(last_error, "code", "") == "rate_limit_exceeded"
-                ):
-                    wait = _parse_retry_after_seconds(
-                        getattr(last_error, "message", "")
-                    )
+            except Exception as e:
+                msg = str(e)
+                if "rate limit" in msg.lower():
+                    wait = _parse_retry_after_seconds(msg)
                     print(
-                        f"[RATE LIMIT] Run failed due to rate limit, retrying in {wait}s..."
+                        f"[RATE LIMIT] Response request hit rate limit, retrying in {wait}s..."
                     )
                     time.sleep(wait)
                     continue
-            print("[ERROR][MODERATION] Run did not complete successfully")
-            return False
+                print(f"[ERROR][MODERATION] Exception fetching response: {e}")
+                return False
         else:
             print("[ERROR][MODERATION] Exceeded maximum retries due to rate limit")
             return False
-
-        try:
-            result = openai_client.beta.threads.messages.list(thread_id=thread_id)
-            latest = result.data[0].content[0].text.value if result.data else ""
-        except Exception as e:
-            print(f"[ERROR][MODERATION] Exception getting results: {e}")
-            latest = ""
 
         print(f"[MODERATION]\n{latest}\n{'='*40}")
         if latest:
@@ -287,26 +257,11 @@ def moderate_batch(
                 if isinstance(flagged, list) and flagged:
                     broadcaster_id = channel_info["user"]["id"]
                     moderator_id = channel_info["user"]["id"]
-                    violations_per_user = {}
                     for msg in flagged:
                         msg_id = msg.get("id")
                         if msg_id:
                             delete_chat_message(
                                 broadcaster_id, moderator_id, msg_id, token, client_id
-                            )
-                        if escalate_assistant_id:
-                            user = msg.get("user")
-                            if user:
-                                violations_per_user.setdefault(user, []).append(msg)
-                    if escalate_assistant_id:
-                        for user, violations in violations_per_user.items():
-                            escalate_queue.put(
-                                {
-                                    "username": user,
-                                    "violations": violations,
-                                    "broadcaster_id": broadcaster_id,
-                                    "moderator_id": moderator_id,
-                                }
                             )
             except Exception as e:
                 print(f"[ERROR][MODERATION][DELETE] Failed to parse/delete: {e}")
@@ -321,8 +276,6 @@ def moderate_batch(
 
 
 def get_channel_info(channel, client_id, token):
-    import requests
-
     user_login = channel.lstrip("#")
     headers = {
         "Client-ID": client_id,
@@ -386,7 +339,6 @@ def batch_worker(
     stop_event,
     openai_client,
     assistant_id,
-    thread_id,
     channel,
     client_id,
     token_manager,
@@ -442,15 +394,49 @@ def run_worker(
     stop_event,
     openai_client,
     assistant_id,
-    escalate_assistant_id,
-    thread_id,
     client_id,
     token_manager,
     token_bucket: TokenBucket,
     moderation_timeout=60,
     use_stream: bool = False,
 ):
-    """Process batches from run_queue sequentially without blocking batch_worker."""
+    """Process batches from run_queue in parallel worker threads."""
+
+    def _run_single_batch(batch, channel_info):
+        try:
+            ok = run_with_timeout(
+                moderate_batch,
+                args=(
+                    openai_client,
+                    assistant_id,
+                    batch,
+                    channel_info,
+                    token_manager.get_token(),
+                    client_id,
+                    token_bucket,
+                    use_stream,
+                ),
+                timeout=moderation_timeout,
+            )
+        except KeyboardInterrupt:
+            stop_event.set()
+            return
+        except RuntimeError as e:
+            print(f"[ERROR][MODERATION][WORKER] {e}")
+            stop_event.set()
+            return
+
+        if not ok:
+            print(
+                f"[ERROR][BATCH] Moderation failed or timed out or API did not respond. Marking {len(batch)} messages as NOT MODERATED and moving on."
+            )
+            debug_ids = [msg["id"] for msg in batch]
+            not_moderated.update(debug_ids)
+            print(
+                f"[DEBUG][NOT-MODERATED] Message IDs not moderated (sample): {debug_ids[:10]}{' ...' if len(debug_ids) > 10 else ''}"
+            )
+
+    worker_threads: list[threading.Thread] = []
     try:
         while not stop_event.is_set() or not run_queue.empty():
             try:
@@ -458,46 +444,16 @@ def run_worker(
             except queue.Empty:
                 continue
 
-            if stop_event.is_set():
-                break
-
-            try:
-                ok = run_with_timeout(
-                    moderate_batch,
-                    args=(
-                        openai_client,
-                        assistant_id,
-                        escalate_assistant_id,
-                        thread_id,
-                        batch,
-                        channel_info,
-                        token_manager.get_token(),
-                        client_id,
-                        token_bucket,
-                        use_stream,
-                    ),
-                    timeout=moderation_timeout,
-                )
-            except KeyboardInterrupt:
-                stop_event.set()
-                break
-            except RuntimeError as e:
-                # Happens if interpreter is shutting down while we're still processing
-                print(f"[ERROR][MODERATION][WORKER] {e}")
-                stop_event.set()
-                break
-
-            if not ok:
-                print(
-                    f"[ERROR][BATCH] Moderation failed or timed out or API did not respond. Marking {len(batch)} messages as NOT MODERATED and moving on."
-                )
-                debug_ids = [msg["id"] for msg in batch]
-                not_moderated.update(debug_ids)
-                print(
-                    f"[DEBUG][NOT-MODERATED] Message IDs not moderated (sample): {debug_ids[:10]}{' ...' if len(debug_ids) > 10 else ''}"
-                )
+            batch_thread = threading.Thread(
+                target=_run_single_batch, args=(batch, channel_info), daemon=True
+            )
+            batch_thread.start()
+            worker_threads.append(batch_thread)
     except KeyboardInterrupt:
         stop_event.set()
+    finally:
+        for t in worker_threads:
+            t.join()
 
 
 def loss_report():
