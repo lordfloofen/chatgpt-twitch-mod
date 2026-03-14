@@ -69,8 +69,12 @@ class TokenBucket:
             if amount > self.tokens:
                 wait_time = (amount - self.tokens) / self.rate
                 self.tokens = 0
+                # Sleep while holding the lock so other threads cannot
+                # consume tokens that are conceptually reserved for this
+                # caller during the wait period.
+                time.sleep(wait_time)
+                # Update timestamp after sleeping so the next caller
+                # calculates elapsed time correctly.
+                self.timestamp = time.time()
             else:
-                wait_time = 0
                 self.tokens -= amount
-        if wait_time > 0:
-            time.sleep(wait_time)

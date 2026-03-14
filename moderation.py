@@ -14,6 +14,7 @@ from token_utils import count_tokens, TokenBucket
 message_queue = queue.Queue()
 run_queue = queue.Queue()
 
+_ids_lock = threading.Lock()
 produced_ids = set()
 consumed_ids = set()
 not_moderated = set()
@@ -223,10 +224,10 @@ def moderate_batch(
             return left and right
 
         latest = None
+        if token_bucket is not None:
+            tokens_needed = count_tokens(batch_json)
+            token_bucket.consume(tokens_needed)
         for attempt in range(MAX_RATE_LIMIT_RETRIES + 1):
-            if token_bucket is not None:
-                tokens_needed = count_tokens(batch_json)
-                token_bucket.consume(tokens_needed)
             try:
                 latest = _request_assistant_response(
                     openai_client, assistant_id, batch_json, use_stream
@@ -255,19 +256,25 @@ def moderate_batch(
             try:
                 flagged = json.loads(latest)
                 if isinstance(flagged, list) and flagged:
-                    broadcaster_id = channel_info["user"]["id"]
-                    moderator_id = channel_info["user"]["id"]
-                    for msg in flagged:
-                        msg_id = msg.get("id")
-                        if msg_id:
-                            delete_chat_message(
-                                broadcaster_id, moderator_id, msg_id, token, client_id
-                            )
+                    if not channel_info or "user" not in channel_info:
+                        print(
+                            f"[ERROR][MODERATION] channel_info unavailable, cannot delete {len(flagged)} flagged message(s)"
+                        )
+                    else:
+                        broadcaster_id = channel_info["user"]["id"]
+                        moderator_id = channel_info["user"]["id"]
+                        for msg in flagged:
+                            msg_id = msg.get("id")
+                            if msg_id:
+                                delete_chat_message(
+                                    broadcaster_id, moderator_id, msg_id, token, client_id
+                                )
             except Exception as e:
                 print(f"[ERROR][MODERATION][DELETE] Failed to parse/delete: {e}")
 
-        for msg in batch:
-            consumed_ids.add(msg["id"])
+        with _ids_lock:
+            for msg in batch:
+                consumed_ids.add(msg["id"])
         return True
 
     except Exception as e:
@@ -309,25 +316,25 @@ def get_channel_info(channel, client_id, token):
         )
         info["channel"] = chan_data
 
-        tags_url = f"https://api.twitch.tv/helix/tags/streams?broadcaster_id={user_id}"
-        tags_resp = requests.get(tags_url, headers=headers, timeout=10)
-        tags = (
-            tags_resp.json().get("data")
-            if tags_resp.status_code == 200 and tags_resp.json().get("data")
-            else []
-        )
-        info["tags"] = tags
+        # Fetch channel tags (non-critical, endpoint may be deprecated)
+        try:
+            chan_tags = chan_data.get("tags", []) if chan_data else []
+            info["tags"] = chan_tags if chan_tags else []
+        except Exception:
+            info["tags"] = []
 
-        follows_url = (
-            f"https://api.twitch.tv/helix/users/follows?to_id={user_id}&first=1"
-        )
-        follows_resp = requests.get(follows_url, headers=headers, timeout=10)
-        follows_count = (
-            follows_resp.json().get("total", 0)
-            if follows_resp.status_code == 200
-            else 0
-        )
-        info["followers"] = follows_count
+        # Fetch follower count via the current endpoint
+        try:
+            follows_url = f"https://api.twitch.tv/helix/channels/followers?broadcaster_id={user_id}&first=1"
+            follows_resp = requests.get(follows_url, headers=headers, timeout=10)
+            follows_count = (
+                follows_resp.json().get("total", 0)
+                if follows_resp.status_code == 200
+                else 0
+            )
+            info["followers"] = follows_count
+        except Exception:
+            info["followers"] = 0
     except Exception as e:
         print(f"[ERROR][CHANNEL_INFO] Exception: {e}")
         return None
@@ -355,7 +362,8 @@ def batch_worker(
         try:
             while not message_queue.empty() and len(batch) < 500:
                 msg = message_queue.get()
-                produced_ids.add(msg["id"])
+                with _ids_lock:
+                    produced_ids.add(msg["id"])
                 batch.append(msg)
 
             now = time.time()
@@ -431,7 +439,8 @@ def run_worker(
                 f"[ERROR][BATCH] Moderation failed or timed out or API did not respond. Marking {len(batch)} messages as NOT MODERATED and moving on."
             )
             debug_ids = [msg["id"] for msg in batch]
-            not_moderated.update(debug_ids)
+            with _ids_lock:
+                not_moderated.update(debug_ids)
             print(
                 f"[DEBUG][NOT-MODERATED] Message IDs not moderated (sample): {debug_ids[:10]}{' ...' if len(debug_ids) > 10 else ''}"
             )
@@ -457,7 +466,8 @@ def run_worker(
 
 
 def loss_report():
-    missing = produced_ids - consumed_ids
+    with _ids_lock:
+        missing = produced_ids - consumed_ids
     print(f"\n[LOSS DETECTION]")
     print(f"  Total messages produced: {len(produced_ids)}")
     print(f"  Total messages consumed: {len(consumed_ids)}")
