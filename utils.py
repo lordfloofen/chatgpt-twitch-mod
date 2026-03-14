@@ -96,7 +96,12 @@ def load_config(path: str = "config.yaml"):
 
 
 def run_with_timeout(func, args=(), kwargs=None, timeout: int = 60):
-    """Run ``func`` with ``timeout`` seconds limit in a helper thread."""
+    """Run ``func`` with ``timeout`` seconds limit in a helper thread.
+
+    Note: On timeout the underlying thread continues running (Python threads
+    cannot be forcibly killed).  The caller should treat a ``False`` return as
+    "result unknown" rather than "did not execute".
+    """
     if kwargs is None:
         kwargs = {}
     with ThreadPoolExecutor(max_workers=1) as executor:
