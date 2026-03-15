@@ -66,11 +66,10 @@ class TokenBucket:
             elapsed = now - self.timestamp
             self.timestamp = now
             self.tokens = min(self.capacity, self.tokens + elapsed * self.rate)
-            if amount > self.tokens:
-                wait_time = (amount - self.tokens) / self.rate
-                self.tokens = 0
+            self.tokens -= amount
+            if self.tokens < 0:
+                wait_time = -self.tokens / self.rate
             else:
-                self.tokens -= amount
                 wait_time = 0
         if wait_time > 0:
             time.sleep(wait_time)
