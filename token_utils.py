@@ -72,5 +72,6 @@ class TokenBucket:
             else:
                 self.tokens -= amount
                 wait_time = 0
-        if wait_time > 0:
-            time.sleep(wait_time)
+            if wait_time > 0:
+                time.sleep(wait_time)
+                self.timestamp = time.time()
