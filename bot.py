@@ -66,7 +66,7 @@ def main():
     # --- Twitch/OpenAI setup ---
     twitch = config["twitch"]
     api_key = config["api_key"]
-    assistant_id = config["assistant_id"]
+    model = config.get("model", "gpt-4o-mini")
     batch_interval = config.get("batch_interval", 2)
     tokens_per_minute = config.get("tokens_per_minute", 20000)
     moderation_timeout = config.get("moderation_timeout", 60)
@@ -94,7 +94,6 @@ def main():
         args=(
             stop_event,
             client_ai,
-            assistant_id,
             channel,
             twitch["client_id"],
             token_manager,  # pass manager so worker can refresh token
@@ -108,7 +107,7 @@ def main():
         args=(
             stop_event,
             client_ai,
-            assistant_id,
+            model,
             twitch["client_id"],
             token_manager,
             token_bucket,

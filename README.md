@@ -5,10 +5,10 @@ An AI-powered moderation bot for Twitch chat that uses OpenAI's GPT models to de
 ## Features
 
 - Real-time chat monitoring and moderation
-- AI-powered content analysis using OpenAI's GPT models
+- AI-powered content analysis using OpenAI's GPT models via the Responses API
 - Configurable moderation thresholds based on user roles (mod, VIP, subscriber)
 - Automatic message deletion for violations
-- Uses an OpenAI moderation assistant to analyze chat messages
+- Uses a configurable moderation prompt (`prompt.txt`) to analyze chat messages
 - Detailed logging of chat and moderation actions
 - Support for OAuth authentication with Twitch
 - Batch processing to optimize API usage
@@ -31,7 +31,7 @@ pip install -r requirements.txt
 3. Copy `config.yaml` and configure with your credentials:
 ```yaml
 api_key: "your-openai-api-key"
-assistant_id: "your-assistant-id"
+model: "gpt-4o-mini"
 batch_interval: 10
 tokens_per_minute: 20000
 moderation_timeout: 60
@@ -57,9 +57,9 @@ Use `-v` to print informational messages and `-vv` to include OAuth debug output
 
 ### Streaming mode
 
-Set `use_stream: true` in `config.yaml` to stream run events from OpenAI instead of polling.
-Streaming can reduce wait time for large runs and provides immediate feedback as
-messages are processed.
+Set `use_stream: true` in `config.yaml` to stream the model's response from OpenAI
+incrementally instead of waiting for the full response in one call. Streaming can
+reduce perceived latency for large batches.
 
 On first run, the bot will:
 1. Generate required SSL certificates for OAuth
@@ -86,7 +86,7 @@ The bot creates two log files:
 See `config.yaml` for all configuration options. Key settings:
 
 - `batch_interval`: Time in seconds between moderation batches
-- Models are configured in the assistant settings (e.g. GPT-4o-mini for moderation)
+- `model`: OpenAI model used for moderation (e.g. `gpt-4o-mini`)
 - `tokens_per_minute`: Rate limit for OpenAI API usage
 - `moderation_timeout`: Timeout in seconds for each moderation batch
 - `max_openai_content_size`: Maximum JSON payload size sent to OpenAI

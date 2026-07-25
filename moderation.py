@@ -8,7 +8,7 @@ import math
 import threading
 from utils import vprint, run_with_timeout
 
-from token_utils import count_tokens, TokenBucket
+from token_utils import count_tokens, TokenBucket, PROMPT_TEXT
 
 # --- Message queue used for incoming messages from IRC ---
 message_queue = queue.Queue()
@@ -95,82 +95,62 @@ def _extract_text_content(content):
     return None
 
 
-def _extract_messages_text(messages, streamed_chunks=None):
-    """Collect text output from an iterable/page of Assistants API messages."""
-    texts = []
-    try:
-        for message in getattr(messages, "data", None) or messages or []:
-            for content in getattr(message, "content", None) or []:
-                value = _extract_text_content(content)
-                if value:
-                    texts.append(value)
-    except Exception as e:
-        print(f"[ERROR][RESPONSE][PARSE] {e}")
-    if texts:
-        return "".join(texts).strip()
+def _extract_response_text(response, streamed_chunks=None):
+    """Collect text output from a Responses API Response object."""
+    text = getattr(response, "output_text", None)
+    if not text:
+        texts = []
+        try:
+            for output in getattr(response, "output", None) or []:
+                if getattr(output, "type", None) != "message":
+                    continue
+                for content in getattr(output, "content", None) or []:
+                    value = _extract_text_content(content)
+                    if value:
+                        texts.append(value)
+        except Exception as e:
+            print(f"[ERROR][RESPONSE][PARSE] {e}")
+        text = "".join(texts)
+    if text:
+        return text.strip()
     if streamed_chunks:
         return "".join(streamed_chunks).strip()
     return ""
 
 
-def _request_assistant_response(
-    openai_client, assistant_id, payload_text: str, use_stream: bool
+def _request_moderation_response(
+    openai_client, model, payload_text: str, use_stream: bool
 ):
-    """Run the assistant on a fresh, disposable thread and return its text reply."""
-    thread = {"messages": [{"role": "user", "content": payload_text}]}
+    """Send a single-turn moderation request to the OpenAI Responses API."""
     if use_stream:
         streamed_chunks = []
-        thread_id = None
         try:
-            with openai_client.beta.threads.create_and_run_stream(
-                assistant_id=assistant_id,
-                thread=thread,
+            with openai_client.responses.stream(
+                model=model,
+                instructions=PROMPT_TEXT,
+                input=payload_text,
+                store=False,
             ) as stream:
                 for event in stream:
-                    data = getattr(event, "data", None)
-                    thread_id = getattr(data, "thread_id", None) or thread_id
-                    delta = getattr(data, "delta", None)
-                    contents = getattr(delta, "content", None) if delta else None
-                    for block in contents or []:
-                        text = _extract_text_content(block)
-                        if text:
-                            streamed_chunks.append(text)
-                final_messages = stream.get_final_messages()
-            result = _extract_messages_text(final_messages, streamed_chunks)
+                    if getattr(event, "type", "") == "response.output_text.delta":
+                        streamed_chunks.append(event.delta)
+                final_response = stream.get_final_response()
+            return _extract_response_text(final_response, streamed_chunks)
         except Exception as e:
             print(f"[ERROR][MODERATION][STREAM] {e}")
             return None
-        finally:
-            if thread_id:
-                try:
-                    openai_client.beta.threads.delete(thread_id)
-                except Exception:
-                    pass
-        return result
-
-    run = openai_client.beta.threads.create_and_run_poll(
-        assistant_id=assistant_id,
-        thread=thread,
+    response = openai_client.responses.create(
+        model=model,
+        instructions=PROMPT_TEXT,
+        input=payload_text,
+        store=False,
     )
-    try:
-        if run.status != "completed":
-            last_error = getattr(run, "last_error", None)
-            detail = getattr(last_error, "message", None) if last_error else None
-            raise RuntimeError(f"Run ended with status '{run.status}': {detail}")
-        messages = openai_client.beta.threads.messages.list(
-            thread_id=run.thread_id, order="desc", limit=1
-        )
-        return _extract_messages_text(messages)
-    finally:
-        try:
-            openai_client.beta.threads.delete(run.thread_id)
-        except Exception:
-            pass
+    return _extract_response_text(response)
 
 
 def moderate_batch(
     openai_client,
-    assistant_id,
+    model,
     batch,
     channel_info=None,
     token=None,
@@ -209,7 +189,7 @@ def moderate_batch(
             mid = len(batch) // 2
             left = moderate_batch(
                 openai_client,
-                assistant_id,
+                model,
                 batch[:mid],
                 channel_info,
                 token,
@@ -219,7 +199,7 @@ def moderate_batch(
             )
             right = moderate_batch(
                 openai_client,
-                assistant_id,
+                model,
                 batch[mid:],
                 channel_info,
                 token,
@@ -235,11 +215,11 @@ def moderate_batch(
             token_bucket.consume(tokens_needed)
         for attempt in range(MAX_RATE_LIMIT_RETRIES + 1):
             try:
-                latest = _request_assistant_response(
-                    openai_client, assistant_id, batch_json, use_stream
+                latest = _request_moderation_response(
+                    openai_client, model, batch_json, use_stream
                 )
                 if latest is None:
-                    raise RuntimeError("Assistant response was empty.")
+                    raise RuntimeError("Moderation response was empty.")
                 break
             except Exception as e:
                 msg = str(e)
@@ -378,7 +358,6 @@ def get_channel_info(channel, client_id, token):
 def batch_worker(
     stop_event,
     openai_client,
-    assistant_id,
     channel,
     client_id,
     token_manager,
@@ -434,7 +413,7 @@ def batch_worker(
 def run_worker(
     stop_event,
     openai_client,
-    assistant_id,
+    model,
     client_id,
     token_manager,
     token_bucket: TokenBucket,
@@ -449,7 +428,7 @@ def run_worker(
                 moderate_batch,
                 args=(
                     openai_client,
-                    assistant_id,
+                    model,
                     batch,
                     channel_info,
                     token_manager.get_token(),
