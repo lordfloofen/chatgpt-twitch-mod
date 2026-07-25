@@ -123,22 +123,20 @@ def _request_moderation_response(
 ):
     """Send a single-turn moderation request to the OpenAI Responses API."""
     if use_stream:
+        # Let exceptions propagate so the caller's rate-limit retry loop can
+        # see them; swallowing them here turned rate limits into hard failures.
         streamed_chunks = []
-        try:
-            with openai_client.responses.stream(
-                model=model,
-                instructions=PROMPT_TEXT,
-                input=payload_text,
-                store=False,
-            ) as stream:
-                for event in stream:
-                    if getattr(event, "type", "") == "response.output_text.delta":
-                        streamed_chunks.append(event.delta)
-                final_response = stream.get_final_response()
-            return _extract_response_text(final_response, streamed_chunks)
-        except Exception as e:
-            print(f"[ERROR][MODERATION][STREAM] {e}")
-            return None
+        with openai_client.responses.stream(
+            model=model,
+            instructions=PROMPT_TEXT,
+            input=payload_text,
+            store=False,
+        ) as stream:
+            for event in stream:
+                if getattr(event, "type", "") == "response.output_text.delta":
+                    streamed_chunks.append(event.delta)
+            final_response = stream.get_final_response()
+        return _extract_response_text(final_response, streamed_chunks)
     response = openai_client.responses.create(
         model=model,
         instructions=PROMPT_TEXT,
@@ -367,8 +365,9 @@ def batch_worker(
     batch = []
     last_send = time.time()
     channel_info = None
-    last_channel_info_time = 0
+    last_channel_info_time = 0.0
     CHANNEL_INFO_REFRESH = 60
+    CHANNEL_INFO_RETRY = 5
 
     while not stop_event.is_set() or not message_queue.empty():
         try:
@@ -379,15 +378,16 @@ def batch_worker(
                 batch.append(msg)
 
             now = time.time()
-            if (
-                now - last_channel_info_time > CHANNEL_INFO_REFRESH
-                or channel_info is None
-            ):
+            # Retry sooner after a failed lookup, but never on every loop tick.
+            refresh_after = (
+                CHANNEL_INFO_REFRESH if channel_info is not None else CHANNEL_INFO_RETRY
+            )
+            if now - last_channel_info_time >= refresh_after:
+                last_channel_info_time = now
                 try:
                     channel_info = get_channel_info(
                         channel, client_id, token_manager.get_token()
                     )
-                    last_channel_info_time = now
                 except Exception as e:
                     print(f"[WARN] Could not fetch channel info: {e}")
                     channel_info = None
@@ -470,6 +470,9 @@ def run_worker(
             )
             batch_thread.start()
             worker_threads.append(batch_thread)
+            # Prune finished threads so the list doesn't grow for the whole
+            # lifetime of the stream.
+            worker_threads = [t for t in worker_threads if t.is_alive()]
     except KeyboardInterrupt:
         stop_event.set()
     finally:

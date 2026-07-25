@@ -104,7 +104,8 @@ def run_with_timeout(func, args=(), kwargs=None, timeout: int = 60):
     """
     if kwargs is None:
         kwargs = {}
-    with ThreadPoolExecutor(max_workers=1) as executor:
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
         try:
             future = executor.submit(func, *args, **kwargs)
         except RuntimeError as e:
@@ -120,3 +121,8 @@ def run_with_timeout(func, args=(), kwargs=None, timeout: int = 60):
         except BaseException as e:
             print(f"[ERROR][THREAD] {e}")
             return False
+    finally:
+        # shutdown(wait=True) — as done implicitly by the context manager —
+        # would block until the (possibly hung) call finishes, defeating the
+        # timeout entirely.
+        executor.shutdown(wait=False)

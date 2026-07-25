@@ -55,7 +55,9 @@ class TokenBucket:
     def __init__(self, tokens_per_minute: int):
         self.capacity = max(1, tokens_per_minute)
         self.tokens = float(self.capacity)
-        self.rate = float(tokens_per_minute) / 60.0
+        # Derive the rate from the clamped capacity so a zero/negative config
+        # value can't produce a zero rate (division by zero in consume()).
+        self.rate = float(self.capacity) / 60.0
         self.timestamp = time.time()
         self.lock = threading.Lock()
 

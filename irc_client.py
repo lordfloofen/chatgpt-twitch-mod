@@ -1,7 +1,12 @@
 import ssl
+import time
 import irc.client
 from datetime import datetime, timezone
 import hashlib
+
+
+class _ConnectionLost(Exception):
+    """Raised from the disconnect handler to break out of process_forever()."""
 
 # If you want message_queue to be shared, import it from your moderation module or bot.py
 # from moderation import message_queue
@@ -85,6 +90,11 @@ def run_irc_forever(config, token_manager, message_queue=None):
             message_queue.put(msg_obj)
         # print(f"[IRC][{user}] {message}")
 
+    def on_disconnect(connection, event):
+        # process_forever() keeps looping after the server drops us, so raise
+        # to unwind back to the reconnect loop below.
+        raise _ConnectionLost(f"Server closed the connection: {event.arguments}")
+
     while True:
         try:
             reactor = irc.client.Reactor()
@@ -95,10 +105,9 @@ def run_irc_forever(config, token_manager, message_queue=None):
             )
             c.add_global_handler("welcome", on_connect)
             c.add_global_handler("pubmsg", on_pubmsg)
+            c.add_global_handler("disconnect", on_disconnect)
             print("[IRC] IRC connection established, event loop starting...")
             reactor.process_forever()
         except Exception as e:
             print(f"[IRC][WARN] Connection lost or error: {e}. Reconnecting in 5s...")
-            import time
-
             time.sleep(5)
