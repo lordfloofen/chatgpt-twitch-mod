@@ -95,32 +95,17 @@ def _extract_text_content(content):
     return None
 
 
-def _extract_response_text(response, streamed_chunks=None):
-    """Collect text output from a Response object."""
+def _extract_messages_text(messages, streamed_chunks=None):
+    """Collect text output from an iterable/page of Assistants API messages."""
     texts = []
     try:
-        outputs = getattr(response, "output", None) or getattr(
-            response, "outputs", None
-        )
-        for output in outputs or []:
-            message = getattr(output, "message", None)
-            contents = getattr(message, "content", None) or []
-            for content in contents:
+        for message in getattr(messages, "data", None) or messages or []:
+            for content in getattr(message, "content", None) or []:
                 value = _extract_text_content(content)
                 if value:
                     texts.append(value)
     except Exception as e:
         print(f"[ERROR][RESPONSE][PARSE] {e}")
-    if not texts:
-        try:
-            output_text = getattr(response, "output_text", None)
-            if output_text:
-                if isinstance(output_text, list):
-                    texts.extend(str(chunk) for chunk in output_text)
-                else:
-                    texts.append(str(output_text))
-        except Exception:
-            pass
     if texts:
         return "".join(texts).strip()
     if streamed_chunks:
@@ -131,35 +116,56 @@ def _extract_response_text(response, streamed_chunks=None):
 def _request_assistant_response(
     openai_client, assistant_id, payload_text: str, use_stream: bool
 ):
-    """Send a single-turn request to the assistant without threads."""
-    streamed_chunks = []
+    """Run the assistant on a fresh, disposable thread and return its text reply."""
+    thread = {"messages": [{"role": "user", "content": payload_text}]}
     if use_stream:
+        streamed_chunks = []
+        thread_id = None
         try:
-            with openai_client.responses.stream(
+            with openai_client.beta.threads.create_and_run_stream(
                 assistant_id=assistant_id,
-                input=payload_text,
+                thread=thread,
             ) as stream:
                 for event in stream:
-                    delta = getattr(event, "delta", None)
-                    if delta:
-                        text = _extract_text_content(delta)
+                    data = getattr(event, "data", None)
+                    thread_id = getattr(data, "thread_id", None) or thread_id
+                    delta = getattr(data, "delta", None)
+                    contents = getattr(delta, "content", None) if delta else None
+                    for block in contents or []:
+                        text = _extract_text_content(block)
                         if text:
                             streamed_chunks.append(text)
-                    elif hasattr(event, "data"):
-                        delta = getattr(event.data, "delta", None)
-                        text = _extract_text_content(delta)
-                        if text:
-                            streamed_chunks.append(text)
-                final_response = stream.get_final_response()
-            return _extract_response_text(final_response, streamed_chunks)
+                final_messages = stream.get_final_messages()
+            result = _extract_messages_text(final_messages, streamed_chunks)
         except Exception as e:
             print(f"[ERROR][MODERATION][STREAM] {e}")
             return None
-    response = openai_client.responses.create(
+        finally:
+            if thread_id:
+                try:
+                    openai_client.beta.threads.delete(thread_id)
+                except Exception:
+                    pass
+        return result
+
+    run = openai_client.beta.threads.create_and_run_poll(
         assistant_id=assistant_id,
-        input=payload_text,
+        thread=thread,
     )
-    return _extract_response_text(response)
+    try:
+        if run.status != "completed":
+            last_error = getattr(run, "last_error", None)
+            detail = getattr(last_error, "message", None) if last_error else None
+            raise RuntimeError(f"Run ended with status '{run.status}': {detail}")
+        messages = openai_client.beta.threads.messages.list(
+            thread_id=run.thread_id, order="desc", limit=1
+        )
+        return _extract_messages_text(messages)
+    finally:
+        try:
+            openai_client.beta.threads.delete(run.thread_id)
+        except Exception:
+            pass
 
 
 def moderate_batch(
@@ -260,9 +266,13 @@ def moderate_batch(
                         print(
                             f"[ERROR][MODERATION] channel_info unavailable, cannot delete {len(flagged)} flagged message(s)"
                         )
+                    elif not channel_info.get("moderator"):
+                        print(
+                            f"[ERROR][MODERATION] moderator identity unavailable, cannot delete {len(flagged)} flagged message(s)"
+                        )
                     else:
                         broadcaster_id = channel_info["user"]["id"]
-                        moderator_id = channel_info["user"]["id"]
+                        moderator_id = channel_info["moderator"]["id"]
                         for msg in flagged:
                             msg_id = msg.get("id")
                             if msg_id:
@@ -282,6 +292,28 @@ def moderate_batch(
         return False
 
 
+def get_moderator_info(client_id, token):
+    """Look up the Twitch user identity that owns the current access token.
+
+    Twitch's moderation endpoints require ``moderator_id`` to match the user
+    ID embedded in the OAuth token, which is not necessarily the broadcaster
+    (the bot commonly runs as a separate moderator account).
+    """
+    headers = {
+        "Client-ID": client_id,
+        "Authorization": f"Bearer {token}",
+    }
+    try:
+        resp = requests.get(
+            "https://api.twitch.tv/helix/users", headers=headers, timeout=10
+        )
+        if resp.status_code == 200 and resp.json().get("data"):
+            return resp.json()["data"][0]
+    except Exception as e:
+        print(f"[ERROR][MODERATOR_INFO] Exception: {e}")
+    return None
+
+
 def get_channel_info(channel, client_id, token):
     user_login = channel.lstrip("#")
     headers = {
@@ -297,6 +329,7 @@ def get_channel_info(channel, client_id, token):
         user_data = user_resp.json()["data"][0]
         info["user"] = user_data
         user_id = user_data["id"]
+        info["moderator"] = get_moderator_info(client_id, token)
 
         stream_url = f"https://api.twitch.tv/helix/streams?user_id={user_id}"
         stream_resp = requests.get(stream_url, headers=headers, timeout=10)
