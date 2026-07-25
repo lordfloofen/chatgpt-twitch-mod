@@ -8,7 +8,7 @@ import math
 import threading
 from utils import vprint, run_with_timeout
 
-from token_utils import count_tokens, TokenBucket
+from token_utils import count_tokens, TokenBucket, PROMPT_TEXT
 
 # --- Message queue used for incoming messages from IRC ---
 message_queue = queue.Queue()
@@ -96,75 +96,61 @@ def _extract_text_content(content):
 
 
 def _extract_response_text(response, streamed_chunks=None):
-    """Collect text output from a Response object."""
-    texts = []
-    try:
-        outputs = getattr(response, "output", None) or getattr(
-            response, "outputs", None
-        )
-        for output in outputs or []:
-            message = getattr(output, "message", None)
-            contents = getattr(message, "content", None) or []
-            for content in contents:
-                value = _extract_text_content(content)
-                if value:
-                    texts.append(value)
-    except Exception as e:
-        print(f"[ERROR][RESPONSE][PARSE] {e}")
-    if not texts:
+    """Collect text output from a Responses API Response object."""
+    text = getattr(response, "output_text", None)
+    if not text:
+        texts = []
         try:
-            output_text = getattr(response, "output_text", None)
-            if output_text:
-                if isinstance(output_text, list):
-                    texts.extend(str(chunk) for chunk in output_text)
-                else:
-                    texts.append(str(output_text))
-        except Exception:
-            pass
-    if texts:
-        return "".join(texts).strip()
+            for output in getattr(response, "output", None) or []:
+                if getattr(output, "type", None) != "message":
+                    continue
+                for content in getattr(output, "content", None) or []:
+                    value = _extract_text_content(content)
+                    if value:
+                        texts.append(value)
+        except Exception as e:
+            print(f"[ERROR][RESPONSE][PARSE] {e}")
+        text = "".join(texts)
+    if text:
+        return text.strip()
     if streamed_chunks:
         return "".join(streamed_chunks).strip()
     return ""
 
 
-def _request_assistant_response(
-    openai_client, assistant_id, payload_text: str, use_stream: bool
+def _request_moderation_response(
+    openai_client, model, payload_text: str, use_stream: bool
 ):
-    """Send a single-turn request to the assistant without threads."""
-    streamed_chunks = []
+    """Send a single-turn moderation request to the OpenAI Responses API."""
     if use_stream:
+        streamed_chunks = []
         try:
             with openai_client.responses.stream(
-                assistant_id=assistant_id,
+                model=model,
+                instructions=PROMPT_TEXT,
                 input=payload_text,
+                store=False,
             ) as stream:
                 for event in stream:
-                    delta = getattr(event, "delta", None)
-                    if delta:
-                        text = _extract_text_content(delta)
-                        if text:
-                            streamed_chunks.append(text)
-                    elif hasattr(event, "data"):
-                        delta = getattr(event.data, "delta", None)
-                        text = _extract_text_content(delta)
-                        if text:
-                            streamed_chunks.append(text)
+                    if getattr(event, "type", "") == "response.output_text.delta":
+                        streamed_chunks.append(event.delta)
                 final_response = stream.get_final_response()
             return _extract_response_text(final_response, streamed_chunks)
         except Exception as e:
             print(f"[ERROR][MODERATION][STREAM] {e}")
             return None
     response = openai_client.responses.create(
-        assistant_id=assistant_id,
+        model=model,
+        instructions=PROMPT_TEXT,
         input=payload_text,
+        store=False,
     )
     return _extract_response_text(response)
 
 
 def moderate_batch(
     openai_client,
-    assistant_id,
+    model,
     batch,
     channel_info=None,
     token=None,
@@ -203,7 +189,7 @@ def moderate_batch(
             mid = len(batch) // 2
             left = moderate_batch(
                 openai_client,
-                assistant_id,
+                model,
                 batch[:mid],
                 channel_info,
                 token,
@@ -213,7 +199,7 @@ def moderate_batch(
             )
             right = moderate_batch(
                 openai_client,
-                assistant_id,
+                model,
                 batch[mid:],
                 channel_info,
                 token,
@@ -229,11 +215,11 @@ def moderate_batch(
             token_bucket.consume(tokens_needed)
         for attempt in range(MAX_RATE_LIMIT_RETRIES + 1):
             try:
-                latest = _request_assistant_response(
-                    openai_client, assistant_id, batch_json, use_stream
+                latest = _request_moderation_response(
+                    openai_client, model, batch_json, use_stream
                 )
                 if latest is None:
-                    raise RuntimeError("Assistant response was empty.")
+                    raise RuntimeError("Moderation response was empty.")
                 break
             except Exception as e:
                 msg = str(e)
@@ -260,9 +246,13 @@ def moderate_batch(
                         print(
                             f"[ERROR][MODERATION] channel_info unavailable, cannot delete {len(flagged)} flagged message(s)"
                         )
+                    elif not channel_info.get("moderator"):
+                        print(
+                            f"[ERROR][MODERATION] moderator identity unavailable, cannot delete {len(flagged)} flagged message(s)"
+                        )
                     else:
                         broadcaster_id = channel_info["user"]["id"]
-                        moderator_id = channel_info["user"]["id"]
+                        moderator_id = channel_info["moderator"]["id"]
                         for msg in flagged:
                             msg_id = msg.get("id")
                             if msg_id:
@@ -282,6 +272,28 @@ def moderate_batch(
         return False
 
 
+def get_moderator_info(client_id, token):
+    """Look up the Twitch user identity that owns the current access token.
+
+    Twitch's moderation endpoints require ``moderator_id`` to match the user
+    ID embedded in the OAuth token, which is not necessarily the broadcaster
+    (the bot commonly runs as a separate moderator account).
+    """
+    headers = {
+        "Client-ID": client_id,
+        "Authorization": f"Bearer {token}",
+    }
+    try:
+        resp = requests.get(
+            "https://api.twitch.tv/helix/users", headers=headers, timeout=10
+        )
+        if resp.status_code == 200 and resp.json().get("data"):
+            return resp.json()["data"][0]
+    except Exception as e:
+        print(f"[ERROR][MODERATOR_INFO] Exception: {e}")
+    return None
+
+
 def get_channel_info(channel, client_id, token):
     user_login = channel.lstrip("#")
     headers = {
@@ -297,6 +309,7 @@ def get_channel_info(channel, client_id, token):
         user_data = user_resp.json()["data"][0]
         info["user"] = user_data
         user_id = user_data["id"]
+        info["moderator"] = get_moderator_info(client_id, token)
 
         stream_url = f"https://api.twitch.tv/helix/streams?user_id={user_id}"
         stream_resp = requests.get(stream_url, headers=headers, timeout=10)
@@ -345,7 +358,6 @@ def get_channel_info(channel, client_id, token):
 def batch_worker(
     stop_event,
     openai_client,
-    assistant_id,
     channel,
     client_id,
     token_manager,
@@ -401,7 +413,7 @@ def batch_worker(
 def run_worker(
     stop_event,
     openai_client,
-    assistant_id,
+    model,
     client_id,
     token_manager,
     token_bucket: TokenBucket,
@@ -416,7 +428,7 @@ def run_worker(
                 moderate_batch,
                 args=(
                     openai_client,
-                    assistant_id,
+                    model,
                     batch,
                     channel_info,
                     token_manager.get_token(),
